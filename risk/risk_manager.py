@@ -21,6 +21,70 @@ class RiskManager:
         self._daily_loss_today: float = 0.0
         self._last_reset_date: str = ""
 
+        # Recovery mode — dynamic risk scaling based on consecutive losses
+        self._consecutive_losses: int = 0
+
+        # Max trades per day
+        self._max_trades_per_day: int = trading_config.get("max_trades_per_day", 3)
+        self._trades_today: int = 0
+        self._trades_reset_date: str = ""
+
+        # Conservative daily loss shutdown (2% of base balance = $200 on $10k)
+        self._daily_loss_shutdown: float = self.base_balance * trading_config.get(
+            "daily_loss_shutdown_percent", 2.0
+        ) / 100
+
+    # ------------------------------------------------------------------
+    # Dynamic risk (recovery mode)
+    # ------------------------------------------------------------------
+
+    def get_current_risk_percent(self) -> float:
+        """Return dynamic risk percent based on consecutive loss count.
+
+        Standard mode : 1.0%
+        Recovery mode  (3-4 consecutive losses): 0.50%
+        Deep recovery  (5+  consecutive losses): 0.25%
+        """
+        if self._consecutive_losses >= 5:
+            return 0.25
+        if self._consecutive_losses >= 3:
+            return 0.50
+        return self.max_risk_percent
+
+    # ------------------------------------------------------------------
+    # Trade count gate
+    # ------------------------------------------------------------------
+
+    def can_open_new_trade(self) -> bool:
+        """Return True if the daily trade count limit has not been reached."""
+        self._maybe_reset_daily_counters()
+        if self._trades_today >= self._max_trades_per_day:
+            logger.warning(
+                "MAX TRADES PER DAY reached: %d/%d",
+                self._trades_today,
+                self._max_trades_per_day,
+            )
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Counter-trend risk
+    # ------------------------------------------------------------------
+
+    def get_risk_for_signal(self, signal) -> float:
+        """Return risk percent for a signal, halving it for counter-trend setups."""
+        base_risk = self.get_current_risk_percent()
+        counter_trend = getattr(signal, "counter_trend", False)
+        if isinstance(signal, dict):
+            counter_trend = signal.get("counter_trend", False)
+        if counter_trend:
+            return base_risk / 2.0
+        return base_risk
+
+    # ------------------------------------------------------------------
+    # Core gate
+    # ------------------------------------------------------------------
+
     def can_trade(self) -> bool:
         try:
             account = self.bridge.get_account_info()
@@ -37,14 +101,24 @@ class RiskManager:
                 return False
 
             # Daily drawdown check (reset at midnight UTC)
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            if today != self._last_reset_date:
-                self._daily_loss_today = 0.0
-                self._last_reset_date = today
+            self._maybe_reset_daily_counters()
 
             daily_loss = balance - equity + self._daily_loss_today
             if daily_loss >= self.max_daily_loss:
                 logger.warning("DAILY DRAWDOWN LIMIT: loss=$%.2f >= max=$%.2f", daily_loss, self.max_daily_loss)
+                return False
+
+            # Conservative daily loss shutdown (2% default — tighter than FTMO's 5%)
+            if self._daily_loss_today >= self._daily_loss_shutdown:
+                logger.warning(
+                    "DAILY LOSS SHUTDOWN: realized loss=$%.2f >= shutdown=$%.2f",
+                    self._daily_loss_today,
+                    self._daily_loss_shutdown,
+                )
+                return False
+
+            # Max trades per day
+            if not self.can_open_new_trade():
                 return False
 
             return True
@@ -64,8 +138,9 @@ class RiskManager:
                 logger.info("Signal rejected: RR %.2f < min %.2f", signal.rr_ratio, self.min_rr)
                 return False
 
-            # Check risk amount doesn't exceed limit
-            risk_amount = account["balance"] * self.max_risk_percent / 100
+            # Use dynamic risk for budget check
+            risk_percent = self.get_risk_for_signal(signal)
+            risk_amount = account["balance"] * risk_percent / 100
             if risk_amount > self.max_daily_loss - self._daily_loss_today:
                 logger.warning("Trade would exceed remaining daily risk budget")
                 return False
@@ -79,3 +154,35 @@ class RiskManager:
     def record_trade_result(self, pnl: float) -> None:
         if pnl < 0:
             self._daily_loss_today += abs(pnl)
+            self._consecutive_losses += 1
+            logger.info(
+                "Loss recorded. Consecutive losses: %d | Risk now: %.2f%%",
+                self._consecutive_losses,
+                self.get_current_risk_percent(),
+            )
+        else:
+            if self._consecutive_losses > 0:
+                logger.info(
+                    "Win recorded. Resetting consecutive losses from %d to 0.",
+                    self._consecutive_losses,
+                )
+            self._consecutive_losses = 0
+
+    def record_trade_opened(self) -> None:
+        """Increment the daily trade counter. Call after a trade is executed."""
+        self._maybe_reset_daily_counters()
+        self._trades_today += 1
+        logger.info("Trades today: %d/%d", self._trades_today, self._max_trades_per_day)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _maybe_reset_daily_counters(self) -> None:
+        """Reset daily loss and trade count at midnight UTC."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self._last_reset_date:
+            self._daily_loss_today = 0.0
+            self._trades_today = 0
+            self._last_reset_date = today
+            self._trades_reset_date = today

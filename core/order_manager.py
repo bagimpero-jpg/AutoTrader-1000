@@ -62,12 +62,16 @@ class OrderManager:
     # Trade execution
     # ------------------------------------------------------------------
 
-    def execute_trade(self, signal: dict[str, Any]) -> int:
+    def execute_trade(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Execute a trade from a signal dict and persist to state.
 
         Signal keys
         -----------
         symbol, direction (BUY/SELL), entry_price, sl, tp, risk_percent, comment
+
+        Returns
+        -------
+        dict with keys: ticket, entry_price, volume, symbol, direction
         """
         symbol: str = signal["symbol"]
         direction: str = signal["direction"].upper()
@@ -108,6 +112,7 @@ class OrderManager:
                     "sl": sl,
                     "tp": tp,
                     "comment": comment,
+                    "risk_freed": False,
                 },
             )
 
@@ -118,11 +123,107 @@ class OrderManager:
                 symbol,
                 volume,
             )
-            return ticket
+            return {
+                "ticket": ticket,
+                "entry_price": signal["entry_price"],
+                "volume": volume,
+                "symbol": symbol,
+                "direction": direction,
+            }
 
         except Exception:
             logger.exception("Failed to execute trade for signal: %s", signal)
             raise
+
+    # ------------------------------------------------------------------
+    # Partial close / position management
+    # ------------------------------------------------------------------
+
+    def check_and_manage_positions(self) -> list[int]:
+        """Manage open positions: partial close at 1:1 RR to free risk.
+
+        For each open position that has reached 1:1 RR and hasn't been
+        partially closed yet, close 50% of the volume and move SL to
+        entry (break-even on the remaining portion).
+
+        Returns list of tickets that were risk-freed this cycle.
+        """
+        risk_freed_tickets: list[int] = []
+        positions = self._bridge.get_open_positions()
+        if not positions:
+            return risk_freed_tickets
+
+        state = self._state.load_state()
+        state_positions = {p["ticket"]: p for p in state.get("open_positions", [])}
+
+        for pos in positions:
+            ticket = pos["ticket"]
+            state_pos = state_positions.get(ticket)
+            if not state_pos:
+                continue
+
+            # Skip if already risk-freed
+            if state_pos.get("risk_freed", False):
+                continue
+
+            entry_price: float = state_pos["entry_price"]
+            sl: float = state_pos["sl"]
+            direction: str = state_pos.get("direction", "").upper()
+            current_price: float = pos.get("price_current", 0.0)
+            volume: float = pos.get("volume", state_pos.get("volume", 0.0))
+
+            if not current_price or not direction:
+                continue
+
+            sl_distance = abs(entry_price - sl)
+            if sl_distance <= 0:
+                continue
+
+            # Calculate current RR
+            if direction == "BUY":
+                current_profit_distance = current_price - entry_price
+            else:  # SELL
+                current_profit_distance = entry_price - current_price
+
+            current_rr = current_profit_distance / sl_distance if sl_distance > 0 else 0.0
+
+            if current_rr >= 1.0:
+                # Close 50% of volume
+                close_volume = round(volume * 0.5, 2)
+                if close_volume <= 0:
+                    continue
+
+                try:
+                    self._bridge.close_position(ticket, volume=close_volume)
+                    logger.info(
+                        "Partial close at 1:1 RR: ticket=%d closed %.2f lots (50%%)",
+                        ticket,
+                        close_volume,
+                    )
+
+                    # Move SL to entry (break-even) on remaining position
+                    self._bridge.modify_position(ticket, sl=entry_price, tp=state_pos.get("tp"))
+                    logger.info(
+                        "SL moved to break-even (%.5f) for ticket=%d",
+                        entry_price,
+                        ticket,
+                    )
+
+                    # Mark as risk-freed in state
+                    self._state.update_position(ticket, {
+                        **state_pos,
+                        "risk_freed": True,
+                        "remaining_volume": round(volume - close_volume, 2),
+                    })
+
+                    risk_freed_tickets.append(ticket)
+
+                except Exception:
+                    logger.exception(
+                        "Failed to partial-close / move SL for ticket %d", ticket
+                    )
+
+        return risk_freed_tickets
 
     # ------------------------------------------------------------------
     # Bulk operations

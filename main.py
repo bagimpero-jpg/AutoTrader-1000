@@ -201,22 +201,19 @@ class AutoTrader:
                 "entry_price": sig.entry_price,
                 "sl": sig.sl,
                 "tp": sig.tp,
-                "risk_percent": self.config["trading"]["risk_percent"],
+                "risk_percent": self.risk_manager.get_risk_for_signal(sig),
                 "comment": f"SMC|{sig.confluence_score}|{'|'.join(sig.reasoning[:2])}",
             }
 
             try:
-                ticket = self.order_mgr.execute_trade(trade_dict)
+                execution_result = self.order_mgr.execute_trade(trade_dict)
             except Exception as e:
                 logger.error("Order execution failed: %s", e)
                 continue
 
-            if ticket:
-                execution_result = {
-                    "ticket": ticket,
-                    "entry_price": sig.entry_price,
-                    "volume": trade_dict.get("volume", 0.0),
-                }
+            if execution_result:
+                self.risk_manager.record_trade_opened()
+                ticket = execution_result["ticket"]
                 signal_dict = asdict(sig)
                 signal_dict["direction"] = direction_str
                 signal_dict["session"] = self.session_profiler.get_current_session(utc_now)
@@ -235,15 +232,14 @@ class AutoTrader:
                                  symbol, asian_range["high"], asian_range["low"])
 
     def _manage_open_positions(self) -> None:
+        # Partial close at 1:1 RR and move SL to break-even
+        risk_freed = self.order_mgr.check_and_manage_positions()
+        if risk_freed:
+            logger.info("Risk-freed positions this cycle: %s", risk_freed)
+
         positions = self.bridge.get_open_positions()
         if not positions:
             return
-
-        for pos in positions:
-            ticket = pos.get("ticket")
-            profit = pos.get("profit", 0)
-            # Position closed by SL/TP — log it
-            # (MT5 handles SL/TP execution; we just detect closures)
 
         # Detect recently closed trades for journaling
         saved = self.state.load_state()
@@ -254,8 +250,9 @@ class AutoTrader:
         for ticket in closed_tickets:
             self._on_trade_closed(ticket)
 
-    def _on_trade_closed(self, ticket: int) -> None:
-        logger.info("Trade %d closed. Running post-trade analysis.", ticket)
+    def _on_trade_closed(self, ticket: int, pnl: float = 0.0) -> None:
+        logger.info("Trade %d closed (PnL: $%.2f). Running post-trade analysis.", ticket, pnl)
+        self.risk_manager.record_trade_result(pnl)
         self.state.remove_position(ticket)
 
         # Log closure to journal
