@@ -1,0 +1,8 @@
+MetaTrader5>=5.0.45
+pandas>=2.0.0
+numpy>=1.24.0
+PyYAML>=6.0
+gspread>=5.10.0
+google-auth>=2.22.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0

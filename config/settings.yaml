@@ -1,0 +1,34 @@
+trading:
+  symbols: ["EURUSD", "GBPUSD", "XAUUSD"]
+  timeframes: ["M15", "H1", "H4"]
+  risk_percent: 1.0
+  min_rr: 2.0
+  max_daily_loss_percent: 5.0
+  max_total_loss_percent: 10.0
+  base_balance: 10000
+
+sessions:
+  asian: {start: "00:00", end: "08:00"}
+  london: {start: "08:00", end: "12:00"}
+  new_york: {start: "13:00", end: "17:00"}
+
+smc:
+  ob_lookback: 50
+  fvg_min_size_pips: 5
+  liquidity_touch_threshold: 3
+  confluence_min_score: 3
+  swing_lookback: 5
+
+cloud:
+  backend: "google_sheets"
+  google_sheets:
+    spreadsheet_name: "AutoTrader1000_Journal"
+    credentials_path: "${GOOGLE_SHEETS_CREDENTIALS}"
+  postgres:
+    url: "${POSTGRES_URL}"
+
+reflection:
+  lookback_days: 7
+  min_trades_for_analysis: 10
+  failing_pattern_threshold: 0.4
+  winning_pattern_threshold: 0.6
