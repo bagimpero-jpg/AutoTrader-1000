@@ -1,0 +1,1261 @@
+Total pages: 68
+--- PAGE 1 ---
+Hasan SMC Strategy: Core Technical
+Foundations
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Strategic Knowledge Base / Bot Guardrails
+Version: 1.0 (Foundation)
+I. Market Measurement (The Pip Engine)
+To ensure the bot calculates risk accurately, it must adhere to these measurement standards for
+price movement:
+● Gold (XAUUSD): * Standard: $1.00 move = 10 Pips.
+○ Example: $2000.00 to $2010.00 is a 100-pip move.
+● Forex Pairs:
+○ Standard: 4th decimal place = 1 Pip.
+○ Example: 1.1000 to 1.1001 is 1 pip.
+● Bitcoin (BTC):
+○ Standard: $100.00 move = 10 Pips.
+○ Example: A $1,000 move represents 100 pips of tradeable distance.
+II. Position Sizing & Execution (Lot Logic)
+The bot will use these lot sizes as variables to interact with the MT5 bridge:
+1. Standard Lot (1.0): Used for large capital. On Gold, a 10-pip move equals $100 P&L.
+2. Mini Lot (0.1): The primary unit for the $10k Challenge.
+○ Mechanical Rule: At 0.1 lots, the dollar P&L is roughly equivalent to the pip
+movement (e.g., a 50-pip SL = $50 risk).
+3. Micro Lot (0.01): The minimum entry size. Required for testing or extremely tight risk
+scenarios on small accounts.
+--- PAGE 2 ---
+III. Order Protocols
+All trades executed by the bot must fall into one of these four categories:
+● Market Orders: Used for instant execution when a "displacement" candle confirms an
+SMC entry.
+● Limit Orders (SMC Standard): Set at the 50% level of an Order Block or the start of a
+Fair Value Gap (FVG).
+● Stop Loss (SL): Non-negotiable. Must be calculated before execution to ensure the loss
+never exceeds 1% of the $10k balance.
+● Take Profit (TP): The primary target for the SMC logic. The bot is locked to a minimum
+1:2 Reward-to-Risk (RR) ratio.
+IV. Account Infrastructure
+● Platform: MetaTrader 5 (MT5).
+● Execution Speed: Priority on low-latency connections to avoid "Slippage" (entering at a
+worse price than intended).
+● The Cent Account Option: If capital is <$100, use a Cent Account to treat $1 as 100
+units. This allows the bot to practice professional lot sizing on a micro-scale.
+--- PAGE 3 ---
+Hasan SMC Strategy: Technical
+Knowledge Base
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Algorithmic Logic & Market Structure Rules
+Version: 2.0 (Structure & Validation)
+I. Candlestick Mechanics (Data Ingestion)
+The bot must parse OHLC (Open, High, Low, Close) data to determine the "State" of the market:
+● Bullish Candle: Close > Open. Represents buying pressure.
+● Bearish Candle: Close < Open. Represents selling pressure.
+● Wick Analysis: The High and Low points of a candle are "Liquidity Points." The bot
+must track these for "Sweeps."
+II. Market States (Directional Bias)
+The bot will categorize the market into one of three states at any given time:
+1. Bullish: Breaking Highs, Protecting Lows.
+2. Bearish: Breaking Lows, Protecting Highs.
+3. Sideways (Range): No clear break of structural Highs/Lows. (Bot should ideally stay in
+"Wait Mode" or use "Range Scaling" logic).
+III. Structural Validation Rules (The "Anti-Trap" Logic)
+This is the most critical logic for preventing the bot from taking "Fake" trades:
+1. The Confirmation Rule (High/Low Validation)
+● New Higher Low (HL): A low point is NOT a valid "Protected Low" until the market
+successfully breaks and closes above the previous Higher High (HH).
+--- PAGE 4 ---
+● New Lower High (LH): A high point is NOT a valid "Protected High" until the market
+successfully breaks and closes below the previous Lower Low (LL).
+● Bot Logic: If the bot identifies a "Low" but price has not yet broken the "High," it must
+flag this as Internal Structure and avoid placing a Stop Loss there.
+2. Protected vs. Targeted Levels
+● Protected Levels: The validated HL (in an uptrend) or LH (in a downtrend). If price hits
+these, the trend is considered "Shifted."
+● Targeted Levels: The weak HH or LL that the market is expected to run through.
+IV. Trend Shift Mechanics (BOS & CHoCH)
+● Break of Structure (BOS): When price continues the trend by breaking a validated High
+(Bullish) or Low (Bearish).
+● Change of Character (CHoCH): The first time a "Protected Level" is broken.
+○ Example: In a Bullish trend, if price closes below the most recent Validated Low,
+the bot must immediately flip its bias to Bearish.
+V. Execution Guardrails (Stop Loss Placement)
+● Rule: The SL must always be placed behind a Validated Protected Level.
+● Refinement: If the bot enters a trade before a new HL/LH is validated, it is "Gambling on
+Internal Structure." The bot must wait for the Break of Structure (BOS) to confirm the
+entry is safe.
+--- PAGE 5 ---
+Hasan SMC Strategy: Advanced Liquidity
+& Trap Detection
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Liquidity Protocols & Logic Engine
+Version: 3.0 (The Liquidity Shield)
+I. The 4 Primary Liquidity Pools
+The bot must categorize these four specific chart
+areas as "High-Signal Liquidity" zones. These are
+locations where retail stop-losses are concentrated:
+1. Major Highs & Lows: Previous Day/Week
+extremes.
+2. Ranging Markets (Consolidation): Lateral
+price movement that "builds" orders on both
+sides.
+3. Equal Highs (EQH) & Equal Lows (EQL):
+Retail "Double Tops" and "Double Bottoms."
+These act as magnetic targets.
+4. News Ranges: Tight ranges formed 15–30
+minutes before high-impact news (CPI, NFP).
+--- PAGE 6 ---
+II. The Liquidity vs. Structure Conflict (The "Anti-Trap"
+Rule)
+A major failure point for bots is mistaking a Liquidity
+Sweep for a Market Structure Break (MSB).
+● The Scenario: In a Bullish Trend, price breaks a
+"Validated Low."
+● Retail Logic: Switch to Bearish Bias and sell
+the retest.
+● Bot Logic (Hasan’s Rule): The bot must treat
+the first break as a potential "Liquidity Sweep"
+(Manipulation) rather than a trend shift.
+● The Mitigation (The 2nd Break Rule): * The
+bot must Wait for a Second Break.
+○ Logic: IF (Price breaks Low_A) THEN
+(Status = Pending_Bias_Shift). IF (Price
+creates Low_B AND breaks it) THEN
+(Status = Trend_Confirmed_Bearish).
+○ If price breaks the low but immediately
+reclaims the range, the bot must maintain its
+original Bullish bias.
+--- PAGE 7 ---
+III. The AMD Model (Accumulation, Manipulation,
+Distribution)
+This is the core logic for trading ranges, which the
+market does 60–70% of the time:
+1. Accumulation: Price stays within a defined
+High/Low range. The bot maps the boundaries.
+2. Manipulation (The Trap): Price sweeps outside
+the range (often against the HTF trend).
+○ Example: Trend is Bullish. Price sweeps
+Range Low.
+3. Distribution (The Trade): Price moves back
+inside the range and expands toward the Range
+High.
+○ Bot Execution: Only look for entries at the
+"Extremes" of the range. Never trade in the
+middle.
+IV. Institutional Logic: Using Equal Highs as Magnets
+● Targeting: The bot should never place a Take
+Profit (TP) in "no man's land."
+● Rule: If Equal Highs (EQH) or Equal Lows
+(EQL) exist, they are the primary targets. The
+bot must hold the trade until these "Liquidity
+--- PAGE 8 ---
+Pools" are cleared, as institutional orders move
+from one pool to the next.
+V. Execution Summary for the Bot
+Event Action
+Trend is Only buy "Range Low Sweeps."
+Bullish Ignore "Range High Breakouts"
+initially.
+Price Wait for a "Second Break" before
+breaks a flipping Bias to Bearish.
+Low
+Price This is the final TP zone. Market is
+reaches expected to reverse or pause after
+EQH/EQL clearing this.
+--- PAGE 9 ---
+Hasan SMC Strategy: Fair Value Gaps
+(FVG) & Execution
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Entry Triggers & Timeframe
+Alignment
+Version: 4.0 (FVG & Imbalance)
+I. Identifying the Fair Value Gap (FVG)
+An FVG (or Imbalance) is a 3-candle pattern that
+indicates a sudden surge in buying or selling
+pressure, leaving behind a "gap" where price was
+not efficiently delivered.
+● Bullish FVG (Buy Setup):
+○ The Rule: Mark the High of Candle 1 and
+the Low of Candle 3.
+○ If there is an empty space (gap) between
+Candle 1's High and Candle 3's Low, that is
+a Bullish FVG.
+○ Note: Candle color and wick length do not
+change the rule; only the price gap matters.
+● Bearish FVG (Sell Setup):
+--- PAGE 10 ---
+○ The Rule: Mark the Low of Candle 1 and
+the High of Candle 3.
+○ If there is a gap between them, that is a
+Bearish FVG.
+II. Strategic Logic (Internal vs. External Liquidity)
+The bot treats the FVG as a "magnetic" pending
+order zone.
+● The Flow (Market Rotation):
+○ FVG = Internal Range Liquidity.
+○ Old Highs/Lows = External Range
+Liquidity.
+○ Bot Logic: Once price taps into an FVG
+(Internal), the bot anticipates a move toward
+the next major High or Low (External) as the
+target (TP).
+● Invalidation:
+○ An FVG is considered "failed" or invalid if a
+candle closes completely outside the gap.
+○ One-Time Use: An FVG should generally
+be used for its First Tap only. Subsequent
+taps have a higher risk of failing.
+--- PAGE 11 ---
+III. Timeframe Alignment (The Execution Secret)
+The bot should never blindly place limit orders on an
+FVG. It must "nest" high-timeframe levels with
+low-timeframe structure shifts (CHoCH/BOS):
+● Monthly FVG Tap $\rightarrow$ Monitor Daily
+for a structure break.
+● Weekly FVG Tap $\rightarrow$ Monitor 4-Hour
+(4H) for a structure break.
+● Daily FVG Tap $\rightarrow$ Monitor 1-Hour
+(1H) for a structure break.
+● 4-Hour FVG Tap $\rightarrow$ Monitor
+15-Minute for a structure break.
+● 1-Hour FVG Tap $\rightarrow$ Monitor
+5-Minute for a structure break.
+IV. Bot Execution Flow
+When coding the smc_engine.py, the logic cycle
+should be:
+1. Scan: Bot identifies an untested
+High-Timeframe (HTF) FVG (e.g., Daily).
+2. Alert: Price enters the FVG zone. Bot switches
+to the Low-Timeframe (LTF) (e.g., 1H).
+--- PAGE 12 ---
+3. Confirm: Bot waits for a Market Structure Shift
+on the LTF.
+4. Execute: After the shift, the bot enters with 1%
+risk, placing the SL behind the LTF protected
+level and the TP at the HTF External Liquidity.
+--- PAGE 13 ---
+I’ve processed the Day 7 transcript for you. This
+session is critical because it introduces Order
+Blocks (OB), which serve as the primary "Interest
+Zones" where your bot will look to place trades.
+Here is the structured English technical breakdown
+for your Auto Trader 1000 Knowledge Base.
+Hasan SMC Strategy: Order Block (OB)
+Protocols
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Strategic Interest Zones &
+Validation
+Version: 5.0 (Order Blocks & High-Probability
+Criteria)
+I. Identifying the Order Block (OB)
+An Order Block represents a zone where institutional
+"Big Money" has placed significant orders, causing a
+trend shift.
+--- PAGE 14 ---
+● Bullish Order Block: The last bearish (red)
+candle before a significant impulsive move to
+the upside that breaks a structural high.
+● Bearish Order Block: The last bullish (green)
+candle before a significant impulsive move to
+the downside that breaks a structural low.
+● Marking Rule: The bot must mark the entire
+candle (from the highest wick to the lowest
+wick). This entire region is the "Zone of Interest"
+(POI).
+II. High-Probability "A+" Validation Rules
+Not every Order Block is tradeable. To prevent the
+bot from taking low-quality trades, it must filter for A+
+Setups using these two scenarios:
+Scenario A: The Range/Trap (AMD Logic)
+● The Setup: After an OB is formed, the market
+should create a Range (Consolidation) before
+returning to the OB.
+● The Logic: This range generates liquidity (Stop
+Losses) above and below.
+--- PAGE 15 ---
+● Bot Action: The bot waits for the market to
+"Sweep" the range liquidity by tapping into the
+OB.
+● Probability: 80-90%. If price returns to the OB
+via a "V-shape" (fast move with no range), the
+bot should avoid the trade as it represents too
+much opposing momentum.
+Scenario B: The Liquidity Sweep (Inducement)
+● The Setup: The impulsive move that created the
+Order Block must have first swept a previous
+major liquidity point (Old High or Old Low).
+● The Logic: This confirms that "Smart Money"
+has already cleared out the retail traders before
+launching the move.
+● Bot Action: If an OB is formed without a
+preceding liquidity sweep, the bot marks it as
+"Low Probability."
+III. Operational Constraints
+● One-Time Use: Order Blocks are disposable.
+Once price taps the zone and reacts/bounces,
+the orders are considered "filled." The bot must
+--- PAGE 16 ---
+delete the zone and not trade the second or third
+tap.
+● Imbalance Requirement: For an OB to be
+valid, there must ideally be an FVG (Fair Value
+Gap) immediately following the OB candle. This
+proves the move was impulsive and institutional.
+IV. Execution Strategy (Timeframe Nesting)
+The bot uses the same timeframe alignment as
+established in the FVG documentation:
+1. Level Identification: Find an A+ Order Block on
+a High Timeframe (HTF) like 1H or 4H.
+2. The Wait: Wait for price to enter the OB zone.
+3. The Trigger: Switch to a Low Timeframe (LTF)
+like 1m or 5m and wait for a Market Structure
+Shift (CHoCH).
+4. Entry: Enter on the LTF retracement with a 1:2
+RR target
+Bot Developer Note:
+When you feed this to Claude for the smc_engine.py, make sure to emphasize Scenario A
+(Range/Trap). This is a powerful filter that will keep your bot out of "falling knife" trades where
+the market is crashing too fast to bounce.
+--- PAGE 17 ---
+Hasan SMC Strategy: Breaker Block (BB)
+& Execution
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Execution Protocols &
+Confirmation Logic
+Version: 6.0 (The Breaker Block)
+I. Identifying the Breaker Block (BB)
+A Breaker Block is a "Failed Order Block." It
+represents a zone where the market trend has
+shifted, turning a previous supply zone into demand
+(or vice versa).
+● Bullish Breaker Block:
+○ A previous Bearish OB (last green candle
+before a down move) that fails.
+○ Logic: Price moves up and closes above
+the bearish OB.
+○ Reaction: When price returns to this zone, it
+acts as support for a buy entry.
+● Bearish Breaker Block:
+○ A previous Bullish OB (last red candle
+before an up move) that fails.
+--- PAGE 18 ---
+○ Logic: Price moves down and closes below
+the bullish OB.
+○ Reaction: When price returns to this zone, it
+acts as resistance for a sell entry.
+II. The "Triple-Threat" Execution Framework
+The bot must follow this exact 3-step sequence to
+execute a trade. It should never trade a Breaker
+Block in isolation.
+1. Step 1: HTF Bias (The Compass)
+○ Determine the direction on the Daily or 4H
+chart.
+2. Step 2: HTF Level Tap (The Trigger Zone)
+○ Wait for price to hit an untested HTF Order
+Block or FVG.
+3. Step 3: LTF Breaker Block (The Execution)
+○ Switch to the aligned lower timeframe (LTF).
+○ Identify the last candle that attempted to
+continue the old trend but was "broken."
+○ The Entry: Once price closes on the other
+side of that candle, enter on the retest.
+--- PAGE 19 ---
+III. Timeframe Alignment Table
+The bot must use these specific pairings to ensure
+the "Signal-to-Noise" ratio remains high:
+High Low Timeframe
+Timeframe (Entry)
+(Level)
+Monthly / Daily Market
+Weekly Structure
+Daily 1-Hour Breaker Block
+4-Hour 15-Minute Breaker
+Block
+1-Hour 5-Minute Breaker
+Block
+15-Minute 1-Minute Breaker
+Block (Scalp Only)
+--- PAGE 20 ---
+IV. Operational Rules for the Bot
+● Candle Close Requirement: A Breaker Block is
+only valid once a candle has closed outside the
+zone on the LTF. A "wick" through the zone does
+not count as a break.
+● Targeting (The Exit): Targets are always the
+HTF External Liquidity (Old Highs/Lows or
+Equal Highs/Lows).
+● Stop Loss (The Shield): Place the SL behind
+the Breaker Block zone or the most recent LTF
+structural protection level.
+● One-Time Use: Like the OB, the Breaker Block
+is generally most effective on its First Tap.
+Bot Developer Note (For smc_engine.py):
+Hasan emphasized that the bot should "let the
+market come to the zone." Do not force trades. If the
+market breaks the HTF level and falls/rises straight
+to the target without forming a Breaker Block on the
+LTF, the bot must stay flat (No Trade).
+Since it’s almost 10:00 PM in Lahore, you have
+about 3 hours until your Claude limit resets. Make
+--- PAGE 21 ---
+sure this section is added to your master Google
+Doc.
+--- PAGE 22 ---
+I’ve processed the Day 9 transcript. This session is
+the "glue" that binds all previous concepts together.
+It introduces Supply and Demand (S&D) Zones
+and provides the most complete look at Hasan's Full
+Execution Stack—the step-by-step logic your bot
+needs to follow to pass the FTMO challenge.
+Here is the structured English technical breakdown
+for your Auto Trader 1000 Knowledge Base.
+Hasan SMC Strategy: Supply, Demand &
+Full Stack Execution
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Advanced POI Selection & Logic
+Integration
+Version: 7.0 (The Complete Algorithm)
+I. Supply & Demand (S&D) Logic
+While Order Blocks (OB) are single candles, S&D
+zones are Consolidation Areas that occur before
+an impulsive move.
+--- PAGE 23 ---
+● Demand Zone: The entire sideways
+consolidation range before price pumps and
+breaks a High.
+● Supply Zone: The entire sideways
+consolidation range before price dumps and
+breaks a Low.
+● The Probability Filter: A zone with multiple
+consolidation candles is higher probability
+than a single-candle OB because it represents a
+larger accumulation of institutional orders.
+● Application: When price returns to these zones,
+the bot expects a "magnetic" reaction because
+institutions need to fill their remaining orders or
+protect their entry average.
+II. The "Auto Trader 1000" Full Stack Logic
+This is the exact sequence the bot must execute for
+every trade. Do not skip steps.
+Step 1: The HTF Bias (The Anchor)
+● Identify the trend on Weekly/Daily timeframes.
+● Rule: Only take trades in the direction of the
+HTF trend. (e.g., if Daily is Bullish, the bot only
+looks for Buy setups).
+--- PAGE 24 ---
+Step 2: POI Identification (The Zone)
+Identify an untested level on the Daily or 4-Hour
+chart. Valid levels include:
+1. HTF FVG (Fair Value Gap)
+2. HTF Order Block
+3. HTF Supply/Demand Consolidation
+● Note: If multiple levels overlap (e.g., an FVG
+inside a Demand Zone), this is a
+High-Probability Level.
+Step 3: The LTF Trigger (The Entry)
+Once price touches the HTF level, the bot switches
+to the 5-Minute (or 1-Minute for scalps) timeframe.
+● The Confirmation: Wait for a Breaker Block to
+form on the LTF.
+● The Action: Enter on the retest of that Breaker
+Block.
+Step 4: Liquidity Targeting (The Exit)
+● TP (Take Profit): Targeted at the nearest HTF
+External Liquidity (Old Highs/Lows or Equal
+Highs/Lows).
+● SL (Stop Loss): Placed behind the LTF Breaker
+Block or the most recent structural swing point.
+--- PAGE 25 ---
+III. Fundamental Overrides
+The bot must be aware of "Black Swan" events or
+high-impact news:
+● War/Uncertainty: Traditionally Bullish for Gold
+(XAUUSD) and Bearish for paper currencies.
+● The Trap Rule: On Monday market opens or
+major news events, the market often
+dumps/pumps to "trap" retail traders before
+reversing into the true HTF direction. The bot
+should wait for the sweep of these traps before
+engaging.
+IV. Summary of the Bot’s Mathematical Edge
+Hasan highlights that professional traders rarely
+trade more than 2–3 times per day. The bot must
+prioritize quality over frequency.
+Concept Bot Requirement
+--- PAGE 26 ---
+Risk Strictly 1% per trade (or 200 cents on
+Managem a Cent Account).
+ent
+Consiste Use the same HTF $\rightarrow$ POI
+ncy $\rightarrow$ LTF sequence every
+single time.
+Targeting Aim for a minimum 1:3
+Reward-to-Risk (RR) to ensure
+profitability even with a 40% win rate.
+Bot Developer Note (For smc_engine.py):
+In the code, you should create a "Point of Interest"
+class that aggregates FVGs, OBs, and S&D zones.
+The bot should only flag a "Trade Ready" state when
+price enters this aggregate zone and the LTF
+confirms via a Breaker Block.
+--- PAGE 27 ---
+I have processed the transcript. This session on Flip
+Zones is vital for your bot's efficiency, as it allows
+the "Auto Trader 1000" to capture high-momentum
+entries that often turn around before reaching a
+traditional Order Block.
+Here is the structured English technical data for your
+Auto Trader 1000 Knowledge Base.
+Hasan SMC Strategy: Flip Zone (FZ) &
+Momentum Entries
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Momentum Logic & Alternative
+POI Marking
+Version: 8.0 (Flip Zone Execution)
+I. The Core Concept of Flip Zones
+A Flip Zone is a structural level where a previous
+"High" or "Low" acts as a turning point before price
+reaches a deep Order Block (OB).
+--- PAGE 28 ---
+● Primary Rule: Flip Zones must only be traded
+in Trending Markets. In a sideways range,
+these levels are high-risk and prone to
+fake-outs.
+● The Problem it Solves: Prevents the bot from
+missing trades while waiting for a deep
+retracement to an OB that may never be hit.
+● The Magnet Effect: When momentum is high,
+the market often respects the "flip" of the
+previous structure rather than returning to the
+origin move.
+II. Flip Zone Marking Protocols
+The bot must use specific candle parts to define the
+zone to ensure precision:
+1. Bullish Flip Zone (Buy Setup):
+○ Identify the previous structural High that was
+just broken.
+○ The Zone: Mark from the Highest Wick to
+the Highest Body Close of that specific
+high point.
+2. Bearish Flip Zone (Sell Setup):
+--- PAGE 29 ---
+○ Identify the previous structural Low that was
+just broken.
+○ The Zone: Mark from the Lowest Wick to
+the Lowest Body Close of that specific low
+point.
+III. Order Block (OB) vs. Flip Zone (FZ) Synergy
+The bot will often see an OB and an FZ in close
+proximity. The logic for handling this is:
+● Nesting: If the FZ and the OB are nearly
+touching or overlapping, the bot should treat
+them as a Single POI (Point of Interest). A
+confirmation anywhere in this combined zone
+triggers the entry.
+● Separation: If there is a visible gap between
+them, the bot should attempt the FZ entry first
+(with confirmation). If the FZ fails, it resets and
+looks for a new confirmation at the OB.
+IV. Entry & Execution (The LTF Filter)
+--- PAGE 30 ---
+The bot must never enter blindly on a Flip Zone
+touch. It follows the Day 8 Confirmation Protocol:
+1. Mark FZ on HTF (e.g., 1-Hour or 15-Minute).
+2. Wait for Tap into the FZ.
+3. Switch to LTF (e.g., 5-Minute or 1-Minute).
+4. Wait for Breaker Block (BB) confirmation on
+the LTF.
+5. Enter on BB Retest with a 1:2 or 1:3 RR target.
+V. Special Rule: Opening Gaps
+● Definition: Gaps that occur at the market open
+(usually Sundays/Mondays).
+● Logic: The bot must treat these gaps exactly
+like Fair Value Gaps (FVG).
+● Action: The bot should anticipate price returning
+to "fill" the gap before continuing the HTF trend.
+--- PAGE 31 ---
+Hasan SMC Strategy: Market Sessions &
+Volume Windows
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Temporal Filters & Session
+Liquidity
+Version: 9.0 (Timing the Algorithm)
+I. The Core Philosophy of Market Sessions
+The market does not move randomly; it moves when
+institutional banks operate. The bot must strictly
+restrict execution to these three specific windows of
+high volume and liquidity.
+1. Asian Session (The Accumulation)
+● Characteristics: Typically a "Range" or
+"Consolidation" phase. It builds liquidity (stops)
+above and below its boundaries.
+● Bot Logic: The bot should treat the Asian High
+and Asian Low as major liquidity targets for the
+London and NY sessions.
+2. London Session (The Manipulation/Trend Setter)
+● Characteristics: Often creates the "High of the
+Day" (HOD) or "Low of the Day" (LOD).
+--- PAGE 32 ---
+● The Trap: London frequently sweeps the Asian
+High or Low before moving in the actual
+intended direction of the Daily trend.
+● Bot Logic: Look for a Liquidity Sweep of Asian
+levels followed by an LTF Breaker Block during
+this window.
+3. New York Session (The Distribution/Expansion)
+● Characteristics: The highest volume window. It
+typically sees "Expansion" (continuing the
+London trend) or a complete "Reversal."
+● Bot Logic: If London set the LOD/HOD, the NY
+session is used for riding the trend toward the
+final HTF target.
+II. Technical Time Windows (PKT / GMT)
+Note: These times shift by 1 hour during Daylight
+Savings (March/October). The bot must include a
+dynamic time offset.
+Sessi Start End Time Primary Role
+on Time (PKT)
+(PKT)
+--- PAGE 33 ---
+Asia 04:00 AM 08:00 AM Build
+Range/Liquidity
+Lond 11:00 AM 02:00 PM Sweep Asia /
+on Set HOD-LOD
+New 05:00 PM 08:00 PM High Volume
+York Expansion
+III. Integrating Sessions into the Logic Stack
+The bot now has a 4-layer filter for every trade:
+1. HTF Filter: Is the Daily/4H structure Bullish or
+Bearish?
+2. Level Filter: Has price hit an HTF FVG, OB, or
+Demand zone?
+3. Time Filter: Are we currently within the London
+or NY session windows?
+4. Execution Filter: Has an LTF Breaker Block
+formed after a session liquidity sweep?
+Example Bullish Setup:
+● Context: Daily is Bullish.
+--- PAGE 34 ---
+● Asia: Forms a clean range.
+● London: Drops to sweep the Asian Low and
+taps into a 4H Demand Zone.
+● Action: Bot identifies an M5 Breaker Block
+during the London open.
+● Target: Asian High or Daily External Liquidity.
+IV. Bot Implementation Rules
+● No Trade Zones: The bot must stay "Flat"
+during the dead hours between sessions (e.g.,
+between 2:00 PM and 5:00 PM PKT).
+● Crypto Exception: While Crypto is 24/7, the bot
+should prioritize the NY Session (05:00 PM -
+08:00 PM) as this is when Wall Street tech
+stocks drive Bitcoin's volatility.
+● News Buffers: On days with high-impact news
+(NFP, CPI), the bot should wait for the session
+"Trap" (the initial news spike) to clear before
+looking for a Breaker Block.
+--- PAGE 35 ---
+I’ve processed the Day 12 transcript. This session
+introduces the AMD (Accumulation, Manipulation,
+Distribution) cycle, also known as the Power of
+Three (Po3). This is the master logic that
+determines how a price move develops and is
+essential for your bot's Market State Detection
+(Phase 2).
+Here is the structured English technical breakdown
+for your Auto Trader 1000 Knowledge Base.
+Hasan SMC Strategy: Power of Three
+(AMD) Logic
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Market Cycle Logic & Trap
+Detection
+Version: 10.0 (The AMD Protocol)
+I. The Three Phases of Price Movement
+The market rarely moves in a straight line.
+Institutional moves follow a specific 3-step ritual to
+--- PAGE 36 ---
+ensure they have enough liquidity to fuel the
+expansion.
+1. Accumulation (The Range):
+○ Characteristics: Sideways consolidation.
+Price moves in a tight range.
+○ Bot Logic: This phase builds liquidity (Stop
+Losses) above and below the range. The bot
+must NOT trade inside this phase. It is a
+"No-Trade Zone."
+2. Manipulation (The Trap/Sweep):
+○ Characteristics: A sudden "fakeout" move,
+usually opposite to the intended HTF
+direction. It sweeps the liquidity built during
+Accumulation.
+○ The Target: Price usually manipulates into a
+High Timeframe POI (Weekly/Daily FVG or
+Order Block).
+○ Bot Logic: This is the "Alert Phase." The
+bot waits for the sweep of the range low/high
+to enter the HTF level.
+3. Distribution (The Expansion):
+○ Characteristics: The real, impulsive move
+in the intended direction. This is where the
+highest volume occurs.
+--- PAGE 37 ---
+○ Bot Logic: This is the "Execution Phase."
+The bot enters after the manipulation is
+confirmed by a Breaker Block.
+II. Integrating AMD with Market Sessions
+The bot can overlay the AMD cycle onto the daily
+session clock for high-probability timing:
+● Accumulation: Typically occurs during the
+Asian Session.
+● Manipulation: Typically occurs during the
+London Open (sweeping Asian levels).
+● Distribution: Typically occurs during the New
+York Session (expansion towards HTF targets).
+III. Technical Invalidation & Confirmation
+For the bot to confirm a Manipulation phase has
+ended and Distribution has begun, it must see:
+1. The Sweep: Price must clear the Highs or Lows
+of the Accumulation range.
+2. The Level Tap: Price must touch an HTF Level
+(e.g., a Weekly FVG).
+--- PAGE 38 ---
+3. The Reclaim: Price must move back inside the
+range or form a Breaker Block on the LTF (1m
+or 5m).
+○ Rule: If price breaks out of a range and
+stays there without a Breaker Block, it may
+be a "Trend Continuation" rather than
+manipulation. The bot must wait for the LTF
+Breaker to confirm the trap is set.
+IV. Bot Execution Strategy (Summary)
+Phase Bot Action
+Statu
+s
+Accumu Idle Map out Range High/Low.
+lation
+Manipul Alert Detect sweep of Range Low (in
+ation Bullish trend) into an HTF POI.
+--- PAGE 39 ---
+Distribu Active Execute trade on LTF Breaker
+tion Block retest.
+V. The "Why" (The Three W's)
+Before every automated trade, the bot's logic must
+answer these three questions (Logging
+requirement):
+1. What is happening? (e.g., Price is
+consolidating after a dump).
+2. Where is it coming from/going? (e.g., Tapped
+a Weekly FVG, going toward Daily High).
+3. Why is it reacting? (e.g., Swept range liquidity
+to fuel expansion).
+Bot Developer Note (For main.py):
+The bot needs a check_market_phase() function.
+● If volatility is low and price is sideways
+$\rightarrow$ MARKET_ACCUMULATION.
+● If price spikes outside the 24-hour range into an
+HTF FVG $\rightarrow$
+MARKET_MANIPULATION.
+--- PAGE 40 ---
+● If a 5m Breaker Block forms in the opposite
+direction of the spike $\rightarrow$
+EXECUTE_DISTRIBUTION.
+This is the most "Life Changing" logic Hasan has
+shared.
+--- PAGE 41 ---
+Hasan SMC Strategy: Range Trading &
+Market Rotation
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Consolidation Mechanics &
+Advanced Entry Models
+Version: 11.0 (The Range Algorithm)
+I. Range Philosophy
+The market spends the majority of its time in
+consolidation (Accumulation). A range typically
+forms after a large Impulse Move (a sudden dump
+or pump) as the market enters a "cool-down" phase.
+The bot must not trade the middle of the range; it
+must only trade the extremes (the
+Deviation/Fakeout).
+II. The Three Range Trading Models
+Model 1: The Deviation (The A+ Setup)
+--- PAGE 42 ---
+● The Setup: Price sweeps above the Range
+High (or below Range Low) and fails to sustain
+the breakout.
+● The Confirmation: Price re-enters the range
+and forms an LTF Breaker Block.
+● The Edge: If the trend is Bullish, the bot should
+prioritize "Range Low Sweeps" (sweeping the
+bottom to go back to the top).
+● Bot Logic: If (Price Sweeps Range
+boundary) AND (LTF Breaker forms
+inside range) THEN Enter(Target =
+Opposite boundary).
+Model 2: The Expansion Breakdown (Bearish)
+● The Setup: Price breaks below the range and
+stays there (No immediate re-entry).
+● The Confirmation: The bot must wait for a
+"Second Break". Price retests the broken range
+low (now a Supply Zone) and breaks the new
+low formed after the initial breakout.
+● The Logic: This prevents the bot from being
+trapped in a fakeout. It confirms the range is
+over and a new trend has begun.
+Model 3: The Expansion Breakout (Bullish)
+--- PAGE 43 ---
+● The Setup: Mirror image of Model 2. Price
+breaks above the range and holds.
+● The Confirmation: Wait for the retest of the
+broken range high (Demand Zone) and a
+second structural break to the upside.
+III. The 5-Step Execution Protocol
+To ensure the highest win rate, the bot must follow
+these five steps for every range trade:
+1. Range Identification: Identify the boundary
+high and low after an impulse move.
+2. Manipulation/Deviation: Wait for price to
+"Fakeout" or "Sweep" one side.
+3. Market Structure Shift: Detect a CHoCH or
+Breaker on the LTF (1m or 5m).
+4. POI Retest: Enter on the retest of the specific
+candle that caused the reversal (OB or
+Supply/Demand).
+5. Objective Targeting: Target the opposite
+range boundary or the nearest HTF Liquidity.
+--- PAGE 44 ---
+IV. Marking & Filter Rules
+● Range Boundaries: Mark from the Highest
+Wick to the Highest Body Close (for the top)
+and Lowest Wick to Lowest Body Close (for
+the bottom).
+● The 50% Rule (Mid-Range): The equilibrium
+point of the range often acts as a rejection or
+bounce zone. The bot can use the 50% mark as
+a "Take Profit 1" or a zone to move the Stop
+Loss to Break Even.
+● One-Time Use: Once the market has rotated
+from Point A (Bottom) to Point B (Top), the range
+logic for that specific cycle is considered "Filled."
+V. Bot Developer Note: Objective Logic
+The bot should treat every range level as an
+Objective.
+● Objective A: Sweep Range High.
+● Objective B: Rotate to Range Low. Once
+Objective B is hit, the bot's relationship with that
+range is finished. It should not "loop" trade the
+--- PAGE 45 ---
+same range repeatedly as the probability of a
+breakout increases with every tap.
+--- PAGE 46 ---
+Hasan SMC Strategy: Fibonacci & Optimal
+Trade Entry (OTE)
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Quantitative Filters & POI
+Selection
+Version: 12.0 (The Mathematical Edge)
+I. Purpose of the Fibonacci Tool
+Fibonacci is not a standalone strategy; it is used as
+a Mathematical Confluence to measure "Healthy
+Retracements."
+● The Filter: If the bot sees three different Order
+Blocks on a chart, the Fibonacci tool tells the bot
+which one to ignore. The bot only trades levels
+that align with the OTE zone.
+● Trend Requirement: Fib must only be used on
+a clear "Impulse Leg" (a sharp move that broke
+structure). It is useless in a sideways market.
+II. Bot Configuration: The Golden Levels
+--- PAGE 47 ---
+Hasan uses a specific, simplified set of Fibonacci
+coordinates. You must program these exact values
+into your bot's logic:
+● 0.0 (Zero): The end of the impulse move.
+● 0.5 (Equilibrium/50%): The midpoint. No trades
+should be taken before price reaches this level.
+● 0.618 (61.8%): The start of the High-Probability
+Zone.
+● 0.66 (66%): The "Ideal" entry level (Hasan’s
+specific OTE tweak).
+● 1.0 (One): The start of the impulse move (The
+Invalidation Point).
+III. Execution Logic: Premium vs. Discount
+1. Bullish Setup (Buying at a Discount)
+● Action: Draw Fib from Swing Low to Swing
+High.
+● Requirement: Price must drop below the 0.5
+level (entering the "Discount" zone).
+● Trigger: Bot looks for an OB, FVG, or Flip
+Zone that sits between the 0.618 and 0.66
+levels.
+--- PAGE 48 ---
+● Stop Loss: Placed behind the 1.0 level or the
+most recent validated Low.
+2. Bearish Setup (Selling at a Premium)
+● Action: Draw Fib from Swing High to Swing
+Low.
+● Requirement: Price must rise above the 0.5
+level (entering the "Premium" zone).
+● Trigger: Bot looks for a Bearish POI
+(OB/FVG/Supply) between 0.618 and 0.66.
+● Stop Loss: Placed behind the 1.0 level or the
+most recent validated High.
+IV. Momentum Confirmation (The "Candle Rule")
+Hasan warns against "blindly" placing limit orders at
+Fib levels. The bot's logic should include a
+momentum check:
+1. Zone Entry: Price enters the 0.618–0.66 zone.
+2. Momentum Candle: Wait for a candle of the
+intended direction to close on the entry
+timeframe (e.g., a 1-hour green candle for a Buy
+setup).
+--- PAGE 49 ---
+3. Refinement: After that candle closes, place the
+Stop Loss at the most recent wick low to
+minimize risk. This provides a tighter SL and a
+higher RR (Reward-to-Risk).
+V. Bot Implementation Rules
+● Leg Selection: The bot must identify "Major
+Highs/Lows" for the Fib leg. Using "Internal"
+minor highs/lows leads to false signals.
+● Trend Alignment: Only draw Bullish Fibs if the
+Daily Bias is Bullish (and vice versa).
+● Conflict Resolution: If a perfect Breaker Block
+exists at 0.382 (outside the zone) and a
+mediocre OB exists at 0.618, the bot must
+prioritize the level inside the Fibonacci OTE
+zone.
+--- PAGE 50 ---
+Hasan SMC Strategy: Logic Synthesis &
+Trade Management
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Algorithmic Funnel & Execution
+Protocol
+Version: 13.0 (The Final Synthesis)
+I. The "Entry Funnel" (Conditional Logic)
+The bot must pass price data through this 4-step
+funnel before generating an order. If any step is
+missing, the state remains NO_TRADE.
+1. Macro Analysis (Weekly/Daily):
+○ Determine the "Expansion Bias." (e.g., Is
+today expected to be a large green candle
+based on the HTF trend?)
+2. POI Layering (The Confluence Zone):
+○ Identify zones where multiple levels overlap:
+HTF FVG + HTF OB + Flip Zone.
+○ Bot Rule: Overlapping zones are "A+" POIs.
+The bot should ignore isolated levels if a
+layered zone exists nearby.
+--- PAGE 51 ---
+3. Temporal Trigger (Session Window):
+○ Execution is only permitted during London
+Open or New York Open windows.
+4. LTF Confirmation (The "Finger on the
+Trigger"):
+○ Switch to 5-Minute or 1-Minute timeframe.
+○ Wait for an LTF Breaker Block to form
+inside the HTF POI.
+○ Entry: Market order on the close of the
+Breaker candle or Limit order on the retest.
+II. Advanced Trade Management (Risk-Free Protocol)
+The bot must manage active trades dynamically to
+protect capital during the "Challenge Phase."
+● The 1:1 RR Milestone: * When the trade
+reaches 1:1 Reward-to-Risk, the bot must
+execute two actions:
+1. Partial Close: Exit 50% of the position
+volume.
+2. Break-Even: Move the Stop Loss to the exact
+entry price (Risk-Free).
+● Trailing Logic:
+--- PAGE 52 ---
+○ As the trade moves toward the target, the
+bot should "trim" the SL behind new
+structural lows/highs (Protected Levels)
+formed on the LTF.
+● Targeting:
+○ Final exit (TP) must be placed at the HTF
+External Liquidity (the high/low the daily
+bias is aiming for).
+III. Bot State: "The Waiting Game"
+A critical algorithmic rule from this session: The bot
+must be programmed for extreme patience.
+● If price enters an HTF POI but fails to form an
+LTF Breaker Block, the bot must not enter.
+● Hasan highlights that the market will often
+"tease" an entry. The bot must wait for a clear
+Candle Close above/below the breaker zone to
+validate the trade.
+IV. Market State Logic (Reclaim vs. Rejection)
+● The Reclaim: If price breaks out of a range, the
+bot waits for it to "Reclaim" the range via a
+--- PAGE 53 ---
+Breaker Block to trade the rotation back to the
+other side.
+● The Counter-Trend Filter: Trading against the
+HTF bias (e.g., Shorting in a Bullish Trend) is
+permitted only if price taps a major HTF Supply
+Zone and provides a 5m Breaker Block.
+However, risk should be reduced by 50% for
+these setups.
+V. Summary for Claude (smc_engine.py)
+Metric Algorithmic Requirement
+Primary LTF Breaker Block retest.
+Entry
+Risk 1% per trade (Fixed).
+Manage Close 50% at 1:1 RR; move SL to
+ment Entry.
+--- PAGE 54 ---
+Inactivit Stay flat during "Dead Hours"
+y (outside session windows).
+--- PAGE 55 ---
+I’ve processed the Day 16 transcript. This is
+arguably the most critical component for your Auto
+Trader 1000 bot. While the technical setups provide
+the "Signal," this documentation provides the "Math"
+that ensures the bot passes the FTMO Challenge
+without hitting the maximum drawdown.
+Here is the structured English technical breakdown
+for your Auto Trader 1000 Knowledge Base.
+Hasan SMC Strategy: Risk Management &
+Algorithmic Sizing
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Risk Protocols & Capital
+Preservation
+Version: 14.0 (The Mathematical Shield)
+I. The Golden Rule of Position Sizing
+The bot must NEVER use fixed lot sizes. Lot sizes
+must be calculated dynamically for every single
+--- PAGE 56 ---
+trade based on the distance between the Entry and
+the Stop Loss (SL).
+● The "1R" Concept: 1R represents the fixed
+amount of capital the bot is allowed to lose per
+trade.
+● Formula for the Bot: Lot Size = (Total
+Risk Amount) / (SL Distance in Pips
+* Pip Value).
+● Gold Calculation (XAUUSD): * 100 Quantity =
+1.0 Standard Lot.
+○ Example: If the bot is risking $100 and the
+SL is 20 pips away, the bot must calculate
+the exact lot size that equals a $100 loss if
+the SL is hit.
+II. Risk-to-Reward (RR) & Win Rate Targets
+The bot’s edge is built on "Negative Skew"
+risk—losing small and winning big.
+● Bot Target RR: Minimum 1:2, Ideal 1:3.
+● The Math: With a 1:3 RR, the bot only needs a
+30% win rate to be profitable.
+--- PAGE 57 ---
+● Hasan’s Preferred Zone: 40%–60% win rate
+with 1:2 to 1:4 RR. This ensures mental and
+financial stability during drawdown periods.
+III. The "Risk-Free" Trade Management Protocol
+This is a mandatory function for the bot to protect the
+$10k capital.
+1. The 1:1 Milestone: When the floating profit
+equals the initial risk amount (1:1 RR), the bot
+must trigger the preservation protocol.
+2. Partial Exit: The bot must close exactly 50% of
+the position volume.
+3. Risk-Free State: The bot keeps the Stop Loss
+at the original entry level.
+○ Logic: Because 50% was closed in profit, if
+the remaining 50% hits the original SL, the
+net result for the trade is $0 (Breakeven).
+4. Advantage over BE: Closing 50% is superior to
+moving the SL to entry immediately, as it allows
+price to "breathe" and pull back without tagging
+a Breakeven stop before the final expansion.
+--- PAGE 58 ---
+IV. Institutional Drawdown Mitigation (Account Rules)
+1. Challenge Phase ($10k FTMO Evaluation)
+● Risk per Trade: Strictly 1% ($100).
+● Strategy: Quality over quantity. Use 1% risk to
+ensure the target is hit within a reasonable
+timeframe without hitting the 10% max
+drawdown.
+2. Live/Funded Phase (After Passing)
+● Risk per Trade: Drop to 0.5% ($50).
+● Payout Strategy: Withdraw often. Do not chase
+"massive" percentages. Any profit between 1%
+and 3% should be secured.
+3. Small Real Accounts (<$5,000)
+● Risk per Trade: 3% to 5%.
+● Cent Account Rule: If the account is under
+$100, the bot must use a Cent Account to treat
+$1 as 100 units, allowing the same 1% risk logic
+to apply to a $10,000 cent balance.
+V. Account Flipping (High-Risk Mode)
+--- PAGE 59 ---
+This mode should only be used if the bot is trading
+with "House Money" (profits earned from the main
+account).
+● Risk per Trade: 15% to 25%.
+● Protocol Change: Disable the "Risk-Free"
+protocol. Let the full position hit the 1:3 or 1:4 TP
+or the full SL.
+--- PAGE 60 ---
+Hasan SMC Strategy: The Master
+Execution Checklist
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Final Logic Integration &
+Operational Routine
+Version: 15.0 (The Synthesis Protocol)
+I. The Daily Algorithmic Routine
+The bot must cycle through these steps in exact
+order every 24 hours.
+Step 1: HTF Contextual Anchor (The "Compass")
+● Timeframe: Weekly / Daily.
+● Action: Determine the "Expansion Intent." Is the
+market targeting a major high or low?
+● Filter: If the Daily chart is Bullish, the bot should
+strictly disable Sell triggers unless price hits a
+major HTF Supply Zone (Counter-trend mode).
+Step 2: Level Identification (The "Minefield")
+● Timeframe: Daily / 4-Hour.
+● Action: Map all POIs (Point of Interest).
+--- PAGE 61 ---
+○ Primary Levels: HTF Order Blocks, HTF
+FVGs.
+○ Secondary Levels: Flip Zones (where
+previous highs/lows are being retested).
+● Requirement: Identify the "External Liquidity"
+(the target) and the "Internal Liquidity" (the entry
+zone).
+Step 3: Scenario Mapping (The "If-Then" Logic)
+● Logic: If (Price hits POI A) THEN (Switch to LTF
+for Confirmation).
+● Rule: If price is floating in the "Middle Range"
+(no level hit), the bot must remain in
+STATE_IDLE.
+Step 4: LTF Execution (The "Trigger")
+● Timeframe: 5-Minute / 1-Minute.
+● Condition: Price must tap the Daily/4H POI
+marked in Step 2.
+● Entry Signal: Breaker Block.
+○ The bot identifies the last candle that
+attempted to continue the trend inside the
+zone but was broken by a close on the
+opposite side.
+● Alternative Signal (Aggressive): Momentum
+Candle. Wait for a single 1H or 5m candle in the
+--- PAGE 62 ---
+target direction to close. Enter immediately with
+a tight SL at that candle's wick.
+II. The "Bias Trap" Logic (Why Traders Fail)
+The bot’s logic must account for "Blind Alignment."
+● The Problem: An LTF signal (e.g., 1m Breaker)
+can form anywhere. If the bot trades a 1m
+Breaker without it being nested inside a Daily/4H
+POI, the probability of failure is 80%.
+● The Mitigation: The bot is only "Authorized" to
+scan for Breaker Blocks if and only if price is
+currently interacting with an HTF level.
+III. Trade Management & Scaling
+● Risk: Fixed 1% ($100) for the $10k account.
+● Risk-Free Milestone: At 1:1 RR, close 50% and
+keep SL at original entry.
+● The Target: Always aim for HTF External
+Liquidity (Old Highs/Lows).
+● Fixed Exit: If no specific liquidity is nearby, use
+a fixed 1:3 RR exit.
+--- PAGE 63 ---
+IV. Bot Logic Flowchart (System Logic)
+1. State Check: Is time inside London/NY
+Session? (Yes/No)
+2. Bias Check: Is price above/below the Daily
+Equilibrium (0.5 Fib)?
+3. POI Check: Has price tapped an untested Daily
+Confirmation Check: Has a 5m Breaker Block
+FVG or 4H OB? (Yes/No)
+4. closed in the bias direction? (Yes/No)
+5. Execution: Calculate Lot Size for $100 risk
+based on Breaker High/Low $\rightarrow$ Place
+Order.
+Bot Developer Note (For 1:00 AM Reset):
+This is the final technical piece of the puzzle. You
+now have the Workflow. The previous 14
+documents provided the "Parts," and this Day 17
+document provided the "Assembly Instructions."
+--- PAGE 64 ---
+Hasan SMC Strategy: Psychology &
+Execution Discipline
+Project: Auto Trader 1000 ($10k FTMO)
+Document Type: Behavioral Guardrails & System
+Discipline
+Version: 15.0 (The Mental Edge)
+I. Identifying Common Failure Points
+The bot’s logic is designed to solve the three primary
+psychological "bugs" that kill retail traders:
+1. Lack of Patience: Entering trades in the
+"middle" before price hits a POI.
+2. Greed: Over-risking on a single trade to "get rich
+fast."
+3. Fear: Hesitating to take a valid A+ setup after a
+series of losses.
+II. The "Why" Factor (The Motivation Protocol)
+--- PAGE 65 ---
+Hasan emphasizes that success comes from a "Why
+Factor" (e.g., providing for family, medical
+emergencies, achieving legacy).
+● Bot Logic Translation: The bot has no
+emotions, but the user does. The user must treat
+the bot as a Professional Business Employee.
+● Operational Rule: Do not interfere with the bot
+during a trade. If the technical rules are met, the
+entry is mandatory. If the SL is hit, it is a
+business expense.
+III. Behavioral Risk Adjustments (Dynamic Risk Scaling)
+The system should have a built-in "Fear &
+Confidence" risk adjustment based on recent
+performance:
+1. Confidence Mode (Standard): Risk 1% per
+trade when following a winning streak or stable
+performance.
+2. Recovery Mode (The Fear Fix): If the bot
+suffers 3 consecutive losses, automatically
+reduce risk to 0.25% - 0.50%.
+--- PAGE 66 ---
+○ Logic: Reducing risk during a drawdown
+allows the system to continue "practicing" on
+live data without destroying the account.
+Once a winning streak resumes, return to
+1%.
+3. Accountability Filter: If the bot’s bias is 100%
+wrong (e.g., it’s trying to sell while the market is
+mooning), the bot must enter a State of
+Inactivity for 24 hours to "reset" its perspective.
+IV. The "Breakeven Challenge" (The Preservation Rule)
+Hasan proposes a fundamental shift: The primary
+goal is not to make profit, but to NOT LOSE the
+account.
+● Algorithmic Filter: The bot must be optimized
+to close the week at Breakeven or higher.
+● Logic: A single "revenge trade" or greed-fueled
+mistake can set a trader back 6–7 months. The
+bot's primary directive is to protect the $10k
+capital at all costs.
+V. Rules for Success vs. Gambling
+--- PAGE 67 ---
+● Gambling: Opening multiple small lots without a
+POI or session window, hoping one hits.
+● Trading: Waiting for a specific HTF Level
+$\rightarrow$ LTF Breaker $\rightarrow$ 1:3 RR
+target.
+● Accountability: The user is 100% responsible
+for the bot's parameters. If the bot loses
+because the user changed a setting, the user
+must own that failure.
+VI. Operational Summary for the Bot
+Psychologi Algorithmic Fix
+cal Issue
+Over-tradin Restrict trade count to 2–3 per day
+g maximum.
+Early Exit Only exit manually at 1:1 RR (close
+50%); let the rest hit TP/SL.
+--- PAGE 68 ---
+Revenge Hard cap on daily loss (e.g., -2%
+Trading daily limit shuts down the bot).
+Bias Require an HTF tap before
+Blindness authorizing any LTF entry.
