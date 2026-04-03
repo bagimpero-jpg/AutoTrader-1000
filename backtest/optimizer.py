@@ -232,22 +232,22 @@ class ChunkedOptimizer:
         """Determine parameter changes (max 2 per chunk)."""
         adjustments: dict[str, float] = {}
 
-        # Rule 1: Very low win rate → raise confluence
+        # Rule 1: Very low win rate -> raise confluence
         if result.win_rate < 50.0:
             adjustments["confluence_min_score"] = 1
-            logger.info("Win rate %.1f%% < 50%% → raising confluence_min_score", result.win_rate)
+            logger.info("Win rate %.1f%% < 50%% -> raising confluence_min_score", result.win_rate)
 
-        # Rule 2: Low RR → raise min_rr
+        # Rule 2: Low RR -> raise min_rr
         if result.avg_rr < 1.5 and "confluence_min_score" not in adjustments:
             adjustments["min_rr"] = 0.5
-            logger.info("Avg RR %.2f < 1.5 → raising min_rr", result.avg_rr)
+            logger.info("Avg RR %.2f < 1.5 -> raising min_rr", result.avg_rr)
 
         # Rule 3: Low-confluence trades losing heavily
         low_conf = analysis.get("by_confluence", {}).get(3, {})
         if low_conf.get("loss_rate", 0) > 0.6 and low_conf.get("count", 0) >= 3:
             if "confluence_min_score" not in adjustments:
                 adjustments["confluence_min_score"] = 1
-                logger.info("Low-confluence (3) loss rate %.0f%% → raising threshold",
+                logger.info("Low-confluence (3) loss rate %.0f%% -> raising threshold",
                             low_conf["loss_rate"] * 100)
 
         # Rule 4: One session significantly worse
@@ -256,7 +256,7 @@ class ChunkedOptimizer:
             if data.get("loss_rate", 0) > 0.7 and data.get("count", 0) >= 5:
                 if len(adjustments) < 2:
                     adjustments["fvg_min_size_pips"] = 2
-                    logger.info("%s session loss rate %.0f%% → widening FVG filter",
+                    logger.info("%s session loss rate %.0f%% -> widening FVG filter",
                                 session, data["loss_rate"] * 100)
 
         # Rule 5: OB setups losing
@@ -264,7 +264,7 @@ class ChunkedOptimizer:
             if "OB" in setup.upper() and data.get("loss_rate", 0) > 0.6:
                 if "ob_lookback" not in adjustments and len(adjustments) < 2:
                     adjustments["ob_lookback"] = 10
-                    logger.info("OB setups losing %.0f%% → increasing ob_lookback",
+                    logger.info("OB setups losing %.0f%% -> increasing ob_lookback",
                                 data["loss_rate"] * 100)
 
         # Limit to 2 adjustments
@@ -317,8 +317,16 @@ class ChunkedOptimizer:
         df: pd.DataFrame, start: datetime, end: datetime,
     ) -> pd.DataFrame:
         """Slice DataFrame by date range."""
-        start_ts = pd.Timestamp(start, tz="UTC")
-        end_ts = pd.Timestamp(end, tz="UTC")
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize("UTC")
+        else:
+            start_ts = start_ts.tz_convert("UTC")
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize("UTC")
+        else:
+            end_ts = end_ts.tz_convert("UTC")
         return df[(df.index >= start_ts) & (df.index <= end_ts)]
 
     def _compute_overall_stats(self, chunks: list[ChunkResult]) -> dict:

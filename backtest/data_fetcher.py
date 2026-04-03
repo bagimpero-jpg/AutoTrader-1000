@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -52,20 +53,115 @@ class DataFetcher:
             logger.info("Loaded %d bars for %s %s", len(df), self.config.symbol, timeframe)
             return df
 
-        # Try fetching raw data at the finest available granularity
-        raw = self._fetch_raw()
+        # Try fetching data — MT5 fetches the exact TF natively
+        raw = self._fetch_raw(timeframe)
         if raw.empty:
             logger.warning("No data fetched. Returning empty DataFrame.")
             return raw
 
-        # Cache every timeframe we can resample to
+        # Check if raw data IS the requested timeframe (from MT5)
+        # by comparing bar frequency to expected
+        expected_minutes = self._tf_to_minutes(timeframe)
+        if len(raw) >= 2:
+            actual_minutes = (raw.index[1] - raw.index[0]).total_seconds() / 60
+            if abs(actual_minutes - expected_minutes) < 1:
+                # MT5 gave us native data — cache and return directly
+                raw.to_parquet(cache_path)
+                logger.info("Cached MT5 %s: %d bars -> %s", timeframe, len(raw), cache_path)
+                return raw
+
+        # Otherwise resample from raw and cache all timeframes
         self._cache_all_timeframes(raw)
 
         if cache_path.exists():
             return pd.read_parquet(cache_path)
 
-        # If requested TF doesn't exist (e.g. raw was too coarse), resample
         return self._resample(raw, timeframe)
+
+    def fetch_mt5(self, timeframe: str, count: int = 99999) -> pd.DataFrame:
+        """Fetch historical data directly from MT5 terminal.
+
+        Parameters
+        ----------
+        timeframe : One of M1, M5, M15, H1, H4, D1.
+        count     : Number of bars to fetch (MT5 max ~100k per call).
+
+        Returns
+        -------
+        Standardized OHLCV DataFrame with UTC DatetimeIndex.
+        """
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            logger.warning("MetaTrader5 package not installed. Skipping MT5 fetch.")
+            return pd.DataFrame()
+
+        tf_map = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+
+        mt5_tf = tf_map.get(timeframe)
+        if mt5_tf is None:
+            logger.error("Unknown MT5 timeframe: %s", timeframe)
+            return pd.DataFrame()
+
+        # Initialize MT5 if not already connected
+        if not mt5.initialize():
+            # Try with credentials from .env
+            login = os.environ.get("FTMO_LOGIN", "")
+            password = os.environ.get("FTMO_PASSWORD", "")
+            server = os.environ.get("FTMO_SERVER", "")
+            mt5_path = os.environ.get("MT5_PATH", "")
+
+            init_kwargs: dict = {}
+            if login:
+                init_kwargs["login"] = int(login)
+            if password:
+                init_kwargs["password"] = password
+            if server:
+                init_kwargs["server"] = server
+            if mt5_path:
+                init_kwargs["path"] = mt5_path
+
+            if not mt5.initialize(**init_kwargs):
+                logger.error("MT5 initialization failed: %s", mt5.last_error())
+                return pd.DataFrame()
+
+        logger.info("Fetching %s %s from MT5 (%d bars)...",
+                     self.config.symbol, timeframe, count)
+
+        rates = mt5.copy_rates_from_pos(self.config.symbol, mt5_tf, 0, count)
+
+        if rates is None or len(rates) == 0:
+            logger.warning("MT5 returned no data for %s %s: %s",
+                           self.config.symbol, timeframe, mt5.last_error())
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df = df.set_index("time")
+
+        # Rename columns to standard OHLCV
+        rename = {}
+        if "tick_volume" in df.columns:
+            rename["tick_volume"] = "volume"
+        if rename:
+            df = df.rename(columns=rename)
+
+        # Keep only OHLCV
+        keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+        df = df[keep]
+
+        if "volume" not in df.columns:
+            df["volume"] = 0
+
+        logger.info("MT5 returned %d %s bars for %s", len(df), timeframe, self.config.symbol)
+        return df
 
     def fetch_yfinance(self, period: str = "2y", interval: str = "1h") -> pd.DataFrame:
         """Fetch gold futures data from yfinance.
@@ -156,8 +252,15 @@ class DataFetcher:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _fetch_raw(self) -> pd.DataFrame:
-        """Try Dukascopy first (finer granularity), fall back to yfinance."""
+    def _fetch_raw(self, timeframe: str | None = None) -> pd.DataFrame:
+        """Try MT5 first (native timeframe), then Dukascopy, then yfinance."""
+        # MT5: fetch the exact timeframe requested (no resampling needed)
+        if timeframe:
+            df = self.fetch_mt5(timeframe)
+            if not df.empty:
+                return df
+
+        # Dukascopy M1
         df = self.fetch_dukascopy()
         if not df.empty:
             return df
@@ -188,7 +291,7 @@ class DataFetcher:
             if not resampled.empty:
                 path = self._cache_path(tf)
                 resampled.to_parquet(path)
-                logger.info("Cached %s: %d bars → %s", tf, len(resampled), path)
+                logger.info("Cached %s: %d bars -> %s", tf, len(resampled), path)
 
     def _cache_path(self, timeframe: str) -> Path:
         """Return the parquet cache file path for a given timeframe."""

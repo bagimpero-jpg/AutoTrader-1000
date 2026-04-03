@@ -10,3 +10,6 @@ build/
 .mypy_cache/
 .pytest_cache/
 state/*.json
+backtest/data/
+backtest/reports/
+*.log

@@ -108,7 +108,6 @@ class SimulatedBroker:
         # Max total drawdown check
         total_dd = (self.config.initial_balance - self.balance) / self.config.initial_balance * 100
         if total_dd >= self.config.max_total_loss_pct:
-            logger.warning("Total drawdown limit reached: %.1f%%", total_dd)
             return False
 
         return True
@@ -141,6 +140,18 @@ class SimulatedBroker:
             entry = current_price + spread / 2 + slippage
         else:
             entry = current_price - spread / 2 - slippage
+
+        # Reject if fill price has already moved past the TP (opportunity gone)
+        if direction == "BUY":
+            if entry >= signal.tp:
+                return None  # price already above TP for a buy
+            if entry <= signal.sl:
+                return None  # price already below SL for a buy
+        else:
+            if entry <= signal.tp:
+                return None  # price already below TP for a sell
+            if entry >= signal.sl:
+                return None  # price already above SL for a sell
 
         # Calculate SL distance and lot size
         sl_distance = abs(entry - signal.sl)
@@ -354,9 +365,10 @@ class SimulatedBroker:
         # Check daily shutdown
         daily_dd_pct = abs(self._daily_pnl) / self.config.initial_balance * 100
         if self._daily_pnl < 0 and daily_dd_pct >= self.config.daily_loss_shutdown_pct:
+            if not self._daily_shutdown:
+                logger.info("Daily loss shutdown triggered: $%.2f (%.1f%%)",
+                            self._daily_pnl, daily_dd_pct)
             self._daily_shutdown = True
-            logger.info("Daily loss shutdown triggered: $%.2f (%.1f%%)",
-                        self._daily_pnl, daily_dd_pct)
 
         if pos in self.open_positions:
             self.open_positions.remove(pos)

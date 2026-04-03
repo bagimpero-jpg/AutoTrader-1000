@@ -194,7 +194,7 @@ class OrderManager:
                     continue
 
                 try:
-                    self._bridge.close_position(ticket, volume=close_volume)
+                    self._bridge.close_partial(ticket, close_volume)
                     logger.info(
                         "Partial close at 1:1 RR: ticket=%d closed %.2f lots (50%%)",
                         ticket,
@@ -202,7 +202,7 @@ class OrderManager:
                     )
 
                     # Move SL to entry (break-even) on remaining position
-                    self._bridge.modify_position(ticket, sl=entry_price, tp=state_pos.get("tp"))
+                    self._bridge.modify_order(ticket, sl=entry_price, tp=state_pos.get("tp"))
                     logger.info(
                         "SL moved to break-even (%.5f) for ticket=%d",
                         entry_price,
