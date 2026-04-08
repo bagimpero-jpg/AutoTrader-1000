@@ -131,14 +131,20 @@ class LiquidityAnalyzer:
         self,
         swing_points: list[SwingPoint],
         tolerance_pips: float = 3.0,
+        pip_value: float = 0.10,
     ) -> list[EqualLevel]:
         """Find clusters of swing highs or lows at nearly identical prices.
 
         Equal highs / lows signal resting liquidity that smart money may
         target.  `tolerance_pips` is the maximum pip distance between points
         to consider them equal.
+
+        Parameters
+        ----------
+        pip_value : float
+            Dollar value of one pip.  Default 0.10 for gold (XAUUSD).
+            For standard FX pairs use 0.0001.
         """
-        pip_value = 0.0001  # standard for most FX pairs
         tolerance = tolerance_pips * pip_value
 
         levels: list[EqualLevel] = []

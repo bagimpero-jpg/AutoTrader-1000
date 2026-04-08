@@ -55,6 +55,9 @@ class BacktestConfig:
     min_win_rate: float = 60.0   # % — trigger adjustment below this
     min_avg_rr: float = 2.0      # Trigger adjustment below this
 
+    # --- SL cap (gold M15) ---
+    max_sl_pips: float = 30.0  # Max SL distance in pips for gold
+
     # --- Partial close ---
     partial_close_rr: float = 1.0   # Close half at 1:1 RR
     partial_close_fraction: float = 0.5  # Close 50% of position

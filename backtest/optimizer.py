@@ -43,7 +43,7 @@ class ChunkedOptimizer:
     """Run backtests in 6-month chunks, adjusting parameters after each."""
 
     PARAM_BOUNDS: dict[str, tuple[float, float]] = {
-        "confluence_min_score": (2, 5),
+        "confluence_min_score": (2, 4),
         "swing_lookback": (3, 10),
         "ob_lookback": (20, 100),
         "fvg_min_size_pips": (3, 15),
