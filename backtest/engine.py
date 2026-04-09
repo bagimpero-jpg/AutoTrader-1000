@@ -55,6 +55,9 @@ class BacktestSMCEngine(SMCEngine):
         current_price = float(df.iloc[-1]["close"])
         all_zones = order_blocks + breakers
         self.zones.check_zone_mitigation(all_zones, current_price)
+        # Zones: FRESH (untouched) and TESTED (touched but held) are valid.
+        # Only BROKEN zones (price closed through) are invalidated.
+        # FRESH zones get priority in signal generation via confluence scoring.
         active_zones = [z for z in all_zones if z.status != ZoneStatus.BROKEN]
 
         # 3. Liquidity
@@ -156,6 +159,16 @@ class BacktestEngine:
         h4_trend = TrendDirection.RANGING
         h4_zones: list[Zone] = []
         h1_zones: list[Zone] = []
+        h4_analysis: AnalysisResult | None = None
+        htf_liq_targets: list[float] = []
+
+        # DEVIATION 7 FIX: Pending signals as limit orders
+        # Each entry is (signal, bars_remaining) — cancel after 4 bars (1 hour)
+        pending_orders: list[tuple[TradeSignal, int]] = []
+        MAX_PENDING_BARS = 4  # Cancel unfilled limit orders after 4 M15 bars
+
+        # BUG FIX: Track used zone midpoints so each zone only fires ONE signal
+        used_zone_keys: set[str] = set()
 
         total_bars = len(m15_data)
         logger.info(
@@ -166,6 +179,54 @@ class BacktestEngine:
         for i in range(self.WARMUP_BARS, total_bars):
             bar = m15_data.iloc[i]
             bar_time = pd.Timestamp(m15_data.index[i])
+
+            # --- Execute pending LIMIT ORDERS ---
+            # BUY limit: fill only if bar low <= signal.entry_price
+            # SELL limit: fill only if bar high >= signal.entry_price
+            # Orders expire after MAX_PENDING_BARS if unfilled.
+            still_pending: list[tuple[TradeSignal, int]] = []
+            for sig, bars_left in pending_orders:
+                if bars_left <= 0:
+                    continue  # Expired — cancel this order
+
+                if not broker.can_open_trade(bar_time):
+                    still_pending.append((sig, bars_left - 1))
+                    continue
+
+                dir_name = getattr(sig.direction, "name", str(sig.direction)).upper()
+                is_buy = "BULL" in dir_name
+
+                bar_open = float(bar["open"])
+                bar_low = float(bar["low"])
+                bar_high = float(bar["high"])
+
+                filled = False
+                if is_buy:
+                    if bar_low <= sig.entry_price:
+                        fill_price = sig.entry_price
+                        filled = True
+                    elif bar_open < sig.entry_price:
+                        fill_price = bar_open
+                        filled = True
+                else:
+                    if bar_high >= sig.entry_price:
+                        fill_price = sig.entry_price
+                        filled = True
+                    elif bar_open > sig.entry_price:
+                        fill_price = bar_open
+                        filled = True
+
+                if filled:
+                    broker.open_position(sig, bar_time, fill_price)
+                else:
+                    still_pending.append((sig, bars_left - 1))
+
+            pending_orders = still_pending
+
+            # --- Update open positions (SL/TP/partial close checks) ---
+            # Done BEFORE generating new signals so new signals don't
+            # get checked against the same bar they were created on.
+            broker.update_positions(bar, bar_time)
 
             # --- Update H4 analysis (only when new H4 bar completes) ---
             h4_current = self._get_latest_htf_bar_time(h4_data, bar_time)
@@ -181,6 +242,13 @@ class BacktestEngine:
                     h4_trend = h4_analysis.trend
                     h4_zones = h4_analysis.active_zones
 
+                    # DEVIATION 3 FIX: Extract HTF liquidity targets for TP
+                    htf_liq_targets = []
+                    for pool in h4_analysis.liquidity_pools:
+                        htf_liq_targets.append(pool.level)
+                    for sp in h4_analysis.swing_points:
+                        htf_liq_targets.append(sp.price)
+
             # --- Update H1 analysis (only when new H1 bar completes) ---
             h1_current = self._get_latest_htf_bar_time(h1_data, bar_time)
             if h1_current is not None and h1_current != last_h1_bar_time:
@@ -193,6 +261,10 @@ class BacktestEngine:
                         swing_lookback=swing_lookback,
                     )
                     h1_zones = h1_analysis.active_zones
+                    # Also add H1 liquidity targets
+                    for pool in h1_analysis.liquidity_pools:
+                        if pool.level not in htf_liq_targets:
+                            htf_liq_targets.append(pool.level)
 
             # --- M15 analysis (rolling 200-bar window) ---
             m15_window = m15_data.iloc[max(0, i - self.WARMUP_BARS + 1) : i + 1]
@@ -203,27 +275,35 @@ class BacktestEngine:
                 swing_lookback=swing_lookback,
             )
 
-            # --- Generate signals ---
+            # --- Generate signals (DEVIATION 4, 5, 3 FIX) ---
+            # Pass h4_trend, amd_phase, and htf_liquidity_targets
             signals = engine.generate_signals(
                 analysis,
                 symbol=self.config.symbol,
                 timeframe="M15",
                 htf_zones=h1_zones if h1_zones else None,
+                h4_trend=h4_trend,
+                amd_phase=analysis.amd_phase,
+                htf_liquidity_targets=htf_liq_targets if htf_liq_targets else None,
+                pip_size=self.config.pip_size,
+                max_sl_pips=self.config.max_sl_pips,
+                min_sl_pips=self.config.min_sl_pips,
             )
 
-            # --- Filter and execute ---
+            # --- Filter and STORE as pending (executed next bar) ---
+            # BUG FIX: Only allow ONE signal per unique zone (by entry+sl key)
             for sig in signals:
                 if sig.confluence_score < confluence_min:
                     continue
                 if sig.rr_ratio < min_rr:
                     continue
-                if not broker.can_open_trade(bar_time):
-                    break
 
-                broker.open_position(sig, bar_time, float(bar["close"]))
-
-            # --- Update open positions (SL/TP/partial close checks) ---
-            broker.update_positions(bar, bar_time)
+                # Unique zone key: round to nearest pip for gold ($0.10)
+                zone_key = f"{round(sig.entry_price, 1)}_{round(sig.sl, 1)}"
+                if zone_key in used_zone_keys:
+                    continue  # Already traded this zone
+                used_zone_keys.add(zone_key)
+                pending_orders.append((sig, MAX_PENDING_BARS))
 
             # --- Equity snapshot ---
             broker.snapshot_equity(bar_time, float(bar["close"]))

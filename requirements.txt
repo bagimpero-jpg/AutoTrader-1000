@@ -6,3 +6,5 @@ gspread>=5.10.0
 google-auth>=2.22.0
 psycopg2-binary>=2.9.0
 python-dotenv>=1.0.0
+yfinance>=0.2.31
+pyarrow>=14.0.0

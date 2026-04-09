@@ -260,6 +260,52 @@ class MT5Bridge:
             logger.exception("Failed to modify position %d", ticket)
             raise
 
+    def close_partial(self, ticket: int, volume: float) -> bool:
+        """Partially close a position by closing the specified volume."""
+        try:
+            position = mt5.positions_get(ticket=ticket)
+            if not position:
+                raise RuntimeError(f"Position {ticket} not found")
+
+            pos = position[0]
+            close_type = (
+                mt5.ORDER_TYPE_SELL
+                if pos.type == mt5.ORDER_TYPE_BUY
+                else mt5.ORDER_TYPE_BUY
+            )
+
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if tick is None:
+                raise RuntimeError(
+                    f"symbol_info_tick({pos.symbol}) failed: {mt5.last_error()}"
+                )
+
+            price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+
+            request: dict[str, Any] = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": volume,
+                "type": close_type,
+                "position": ticket,
+                "price": price,
+                "comment": "partial_close",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                error_detail = result.comment if result else mt5.last_error()
+                raise RuntimeError(f"close_partial failed: {error_detail}")
+
+            logger.info("Position %d partially closed: %.2f lots", ticket, volume)
+            return True
+
+        except Exception:
+            logger.exception("Failed to partially close position %d", ticket)
+            raise
+
     def close_position(self, ticket: int) -> bool:
         """Close an open position by ticket."""
         try:
