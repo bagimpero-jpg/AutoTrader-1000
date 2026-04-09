@@ -169,6 +169,41 @@ class ChunkedOptimizer:
     # Analysis
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _aggregate_trades(trades: list) -> list:
+        """Combine partial close + final close records into one trade per ticket."""
+        from collections import defaultdict
+        grouped: dict[int, list] = defaultdict(list)
+        for t in trades:
+            grouped[t.ticket].append(t)
+
+        aggregated = []
+        for ticket, group in grouped.items():
+            if len(group) == 1:
+                aggregated.append(group[0])
+                continue
+            # Combine: sum PnL, use final record as base
+            total_pnl = sum(t.pnl_dollars for t in group)
+            total_pips = sum(t.pnl_pips for t in group)
+            final = [t for t in group if t.exit_reason != "PARTIAL_CLOSE"]
+            base = final[-1] if final else group[-1]
+            # Recalculate RR from combined PnL
+            sl_dist_pips = abs(base.entry_price - base.sl) / 0.10 if base.sl else 1.0
+            combined_rr = total_pips / sl_dist_pips if sl_dist_pips > 0 else 0.0
+
+            from types import SimpleNamespace
+            aggregated.append(SimpleNamespace(
+                ticket=ticket, symbol=base.symbol, direction=base.direction,
+                entry_price=base.entry_price, exit_price=base.exit_price,
+                sl=base.sl, tp=base.tp, volume=sum(t.volume for t in group),
+                entry_time=group[0].entry_time, exit_time=base.exit_time,
+                pnl_pips=total_pips, pnl_dollars=total_pnl,
+                rr_achieved=round(combined_rr, 2), exit_reason=base.exit_reason,
+                setup_type=base.setup_type, session=base.session,
+                confluence_score=base.confluence_score, reasoning=base.reasoning,
+            ))
+        return aggregated
+
     def _analyze_losing_trades(self, result: BacktestResult) -> dict:
         """Categorize losing trades by setup type, session, and confluence."""
         analysis: dict[str, Any] = {
@@ -179,13 +214,14 @@ class ChunkedOptimizer:
             "total_losses": 0,
         }
 
-        losers = [t for t in result.trades if t.pnl_dollars < 0 and t.exit_reason != "PARTIAL_CLOSE"]
-        winners = [t for t in result.trades if t.pnl_dollars > 0 or t.exit_reason == "TP"]
+        agg_trades = self._aggregate_trades(result.trades)
+        losers = [t for t in agg_trades if t.pnl_dollars < 0]
+        winners = [t for t in agg_trades if t.pnl_dollars > 0]
         analysis["total_losses"] = len(losers)
 
         # By session
         for session in ("LONDON", "NEW_YORK"):
-            sess_trades = [t for t in result.trades if t.session == session and t.exit_reason != "PARTIAL_CLOSE"]
+            sess_trades = [t for t in agg_trades if t.session == session]
             sess_losses = [t for t in losers if t.session == session]
             count = len(sess_trades)
             analysis["by_session"][session] = {
@@ -199,9 +235,9 @@ class ChunkedOptimizer:
             }
 
         # By setup type
-        setup_types: set[str] = {t.setup_type for t in result.trades}
+        setup_types: set[str] = {t.setup_type for t in agg_trades}
         for setup in setup_types:
-            setup_trades = [t for t in result.trades if t.setup_type == setup and t.exit_reason != "PARTIAL_CLOSE"]
+            setup_trades = [t for t in agg_trades if t.setup_type == setup]
             setup_losses = [t for t in losers if t.setup_type == setup]
             count = len(setup_trades)
             analysis["by_setup"][setup] = {
@@ -212,7 +248,7 @@ class ChunkedOptimizer:
 
         # By confluence score
         for score in range(1, 6):
-            score_trades = [t for t in result.trades if t.confluence_score == score and t.exit_reason != "PARTIAL_CLOSE"]
+            score_trades = [t for t in agg_trades if t.confluence_score == score]
             score_losses = [t for t in losers if t.confluence_score == score]
             count = len(score_trades)
             analysis["by_confluence"][score] = {
@@ -338,7 +374,7 @@ class ChunkedOptimizer:
         for c in chunks:
             all_trades.extend(c.result.trades)
 
-        real_trades = [t for t in all_trades if t.exit_reason != "PARTIAL_CLOSE"]
+        real_trades = self._aggregate_trades(all_trades)
         winners = [t for t in real_trades if t.pnl_dollars > 0]
         losers = [t for t in real_trades if t.pnl_dollars <= 0]
 

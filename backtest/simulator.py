@@ -141,20 +141,49 @@ class SimulatedBroker:
         else:
             entry = current_price - spread / 2 - slippage
 
-        # Reject if fill price has already moved past the TP (opportunity gone)
+        # FIX 2: Recalculate SL/TP from actual fill price to preserve
+        # the signal's intended risk and reward distances.
+        # Without this, spread+slippage can make TP land behind entry
+        # or inflate actual risk far beyond what the signal intended.
+        signal_risk = abs(signal.entry_price - signal.sl)
+        signal_reward = abs(signal.tp - signal.entry_price)
+
         if direction == "BUY":
-            if entry >= signal.tp:
-                return None  # price already above TP for a buy
-            if entry <= signal.sl:
-                return None  # price already below SL for a buy
+            adjusted_sl = entry - signal_risk
+            adjusted_tp = entry + signal_reward
         else:
-            if entry <= signal.tp:
-                return None  # price already below TP for a sell
-            if entry >= signal.sl:
-                return None  # price already above SL for a sell
+            adjusted_sl = entry + signal_risk
+            adjusted_tp = entry - signal_reward
+
+        # Reject if signal risk is degenerate
+        if signal_risk <= 0 or signal_reward <= 0:
+            return None
+
+        # FIX 4: Max SL guard — clamp risk to max allowed distance
+        max_allowed_risk = self.config.max_sl_pips * self.config.pip_size
+        actual_risk = abs(entry - adjusted_sl)
+        if actual_risk > max_allowed_risk:
+            if direction == "BUY":
+                adjusted_sl = entry - max_allowed_risk
+                adjusted_tp = entry + max_allowed_risk * 2  # maintain 2:1 min
+            else:
+                adjusted_sl = entry + max_allowed_risk
+                adjusted_tp = entry - max_allowed_risk * 2
+
+        # Reject if fill price has already moved past the adjusted TP
+        if direction == "BUY":
+            if entry >= adjusted_tp:
+                return None
+            if entry <= adjusted_sl:
+                return None
+        else:
+            if entry <= adjusted_tp:
+                return None
+            if entry >= adjusted_sl:
+                return None
 
         # Calculate SL distance and lot size
-        sl_distance = abs(entry - signal.sl)
+        sl_distance = abs(entry - adjusted_sl)
         if sl_distance <= 0:
             return None
 
@@ -186,8 +215,8 @@ class SimulatedBroker:
             symbol=signal.symbol,
             direction=direction,
             entry_price=entry,
-            sl=signal.sl,
-            tp=signal.tp,
+            sl=adjusted_sl,
+            tp=adjusted_tp,
             volume=volume,
             entry_time=bar_time.to_pydatetime(),
             setup_type=setup_type,
@@ -195,7 +224,7 @@ class SimulatedBroker:
             confluence_score=signal.confluence_score,
             reasoning=signal.reasoning,
             original_volume=volume,
-            original_sl=signal.sl,
+            original_sl=adjusted_sl,
         )
 
         self.open_positions.append(pos)
@@ -203,7 +232,7 @@ class SimulatedBroker:
 
         logger.debug(
             "Opened %s %s @ %.2f | SL=%.2f TP=%.2f | Vol=%.2f | Risk=%.2f%%",
-            direction, signal.symbol, entry, signal.sl, signal.tp, volume, risk_pct,
+            direction, signal.symbol, entry, adjusted_sl, adjusted_tp, volume, risk_pct,
         )
 
         return pos
@@ -383,12 +412,76 @@ class SimulatedBroker:
             self._close_position(pos, current_price, "END_OF_DATA", bar_time)
 
     # ------------------------------------------------------------------
+    # Trade aggregation (combines partial close + final close per ticket)
+    # ------------------------------------------------------------------
+
+    def _aggregate_trades_by_ticket(self) -> list[ClosedTrade]:
+        """Group closed trades by ticket, combining partial close + final close.
+
+        A trade with a partial close produces two ClosedTrade records:
+        1. PARTIAL_CLOSE (profitable half at 1:1 RR)
+        2. SL/TP/END_OF_DATA (remaining half)
+
+        This method combines them into ONE logical trade per ticket so that
+        win rate and RR calculations reflect the total trade outcome.
+        """
+        from collections import defaultdict
+        grouped: dict[int, list[ClosedTrade]] = defaultdict(list)
+        for t in self.closed_trades:
+            grouped[t.ticket].append(t)
+
+        aggregated: list[ClosedTrade] = []
+        for ticket, trades in grouped.items():
+            if len(trades) == 1:
+                aggregated.append(trades[0])
+                continue
+
+            # Multiple records for same ticket — combine
+            total_pnl_pips = sum(t.pnl_pips for t in trades)
+            total_pnl_dollars = sum(t.pnl_dollars for t in trades)
+            total_volume = sum(t.volume for t in trades)
+
+            # Use the final (non-partial) record as the base
+            final = [t for t in trades if t.exit_reason != "PARTIAL_CLOSE"]
+            base = final[-1] if final else trades[-1]
+
+            # Recalculate RR from total PnL
+            sl_dist = abs(base.entry_price - base.sl)
+            sl_dist_pips = sl_dist / self.config.pip_size if sl_dist > 0 else 1.0
+            rr = total_pnl_pips / sl_dist_pips if sl_dist_pips > 0 else 0.0
+
+            aggregated.append(ClosedTrade(
+                ticket=ticket,
+                symbol=base.symbol,
+                direction=base.direction,
+                entry_price=base.entry_price,
+                exit_price=base.exit_price,
+                sl=base.sl,
+                tp=base.tp,
+                volume=total_volume,
+                entry_time=trades[0].entry_time,
+                exit_time=base.exit_time,
+                pnl_pips=total_pnl_pips,
+                pnl_dollars=total_pnl_dollars,
+                rr_achieved=round(rr, 2),
+                exit_reason=base.exit_reason,
+                setup_type=base.setup_type,
+                session=base.session,
+                confluence_score=base.confluence_score,
+                reasoning=base.reasoning,
+                risk_freed=any(t.risk_freed for t in trades),
+            ))
+
+        return aggregated
+
+    # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
 
     def get_stats(self) -> dict:
         """Compute comprehensive performance statistics."""
-        real_trades = [t for t in self.closed_trades if t.exit_reason != "PARTIAL_CLOSE"]
+        # FIX 1: Use aggregated trades so partial close profits count
+        real_trades = self._aggregate_trades_by_ticket()
 
         if not real_trades:
             return {

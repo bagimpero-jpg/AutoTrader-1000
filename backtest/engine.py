@@ -287,6 +287,7 @@ class BacktestEngine:
                 htf_liquidity_targets=htf_liq_targets if htf_liq_targets else None,
                 pip_size=self.config.pip_size,
                 max_sl_pips=self.config.max_sl_pips,
+                min_sl_pips=self.config.min_sl_pips,
             )
 
             # --- Filter and STORE as pending (executed next bar) ---
@@ -297,8 +298,8 @@ class BacktestEngine:
                 if sig.rr_ratio < min_rr:
                     continue
 
-                # Unique zone key: entry price + SL level
-                zone_key = f"{sig.entry_price:.2f}_{sig.sl:.2f}"
+                # Unique zone key: round to nearest pip for gold ($0.10)
+                zone_key = f"{round(sig.entry_price, 1)}_{round(sig.sl, 1)}"
                 if zone_key in used_zone_keys:
                     continue  # Already traded this zone
                 used_zone_keys.add(zone_key)

@@ -314,6 +314,7 @@ class SMCEngine:
         htf_liquidity_targets: list[float] | None = None,
         pip_size: float = 0.10,
         max_sl_pips: float = 30.0,
+        min_sl_pips: float = 10.0,
     ) -> list[TradeSignal]:
         """Produce trade signals from an AnalysisResult.
 
@@ -558,7 +559,8 @@ class SMCEngine:
             # ---- DEVIATION 2 FIX: SL behind zone boundary ----
             # Hasan: SL behind the Breaker Block or LTF protected level
             zone_height = zone.high - zone.low
-            sl_buffer = max(zone_height * 0.1, pip_size)  # min 1 pip buffer
+            min_risk_distance = min_sl_pips * pip_size  # 10 * 0.10 = $1.00 for gold
+            sl_buffer = max(zone_height * 0.1, min_risk_distance)
 
             if direction == TrendDirection.BULLISH:
                 sl = zone.low - sl_buffer
