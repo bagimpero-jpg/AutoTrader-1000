@@ -1,6 +1,7 @@
 """Auto Trader 1000 — Autonomous FTMO Challenge Trading Bot."""
 from __future__ import annotations
 
+import csv
 import logging
 import os
 import signal
@@ -134,7 +135,9 @@ class AutoTrader:
     def _main_loop(self) -> None:
         cfg = self.config["trading"]
         symbols = cfg["symbols"]
-        timeframes = cfg["timeframes"]
+        smc_cfg = self.config.get("smc", {})
+        swing_lookback = smc_cfg.get("swing_lookback", 5)
+        confluence_min = smc_cfg.get("confluence_min_score", 3)
         poll_interval = cfg.get("poll_interval_seconds", 30)
 
         while self.running:
@@ -155,10 +158,9 @@ class AutoTrader:
                     time.sleep(poll_interval)
                     continue
 
-                # Scan each symbol/timeframe for signals
+                # Multi-TF scan: H4 bias → H1 zones → M15 entry (matches backtest)
                 for symbol in symbols:
-                    for tf in timeframes:
-                        self._scan_and_execute(symbol, tf, utc_now)
+                    self._scan_multi_tf(symbol, utc_now, swing_lookback, confluence_min)
 
                 # Check existing positions for management
                 self._manage_open_positions()
@@ -174,10 +176,15 @@ class AutoTrader:
                 })
                 time.sleep(5)
 
-    def _scan_and_execute(self, symbol: str, timeframe: str, utc_now: datetime) -> None:
-        df = self.bridge.get_candles(symbol, timeframe, count=200)
-        if df is None or df.empty:
-            return
+    def _scan_multi_tf(
+        self, symbol: str, utc_now: datetime,
+        swing_lookback: int = 5, confluence_min: int = 3,
+    ) -> None:
+        """Multi-timeframe scan matching the proven backtest approach.
+
+        H4 → trend bias, H1 → zone context, M15 → entry signals.
+        """
+        from strategy.structures import TrendDirection
 
         # Check news filter
         blocked, reason = self.news_filter.is_blocked(symbol, utc_now)
@@ -185,11 +192,53 @@ class AutoTrader:
             logger.info("Skipping %s: news block — %s", symbol, reason)
             return
 
-        analysis = self.smc_engine.analyze(df, symbol, timeframe)
-        signals = self.smc_engine.generate_signals(analysis, symbol=symbol, timeframe=timeframe)
+        # Step 1: H4 trend bias
+        h4_df = self.bridge.get_candles(symbol, "H4", count=200)
+        h4_trend = TrendDirection.RANGING
+        htf_liq_targets: list[float] = []
+        if h4_df is not None and len(h4_df) >= 20:
+            h4_analysis = self.smc_engine.analyze(h4_df, symbol, "H4")
+            h4_trend = h4_analysis.trend
+            for pool in h4_analysis.liquidity_pools:
+                htf_liq_targets.append(pool.level)
+            for sp in h4_analysis.swing_points:
+                htf_liq_targets.append(sp.price)
 
+        # Step 2: H1 zone context
+        h1_df = self.bridge.get_candles(symbol, "H1", count=200)
+        h1_zones = []
+        if h1_df is not None and len(h1_df) >= 20:
+            h1_analysis = self.smc_engine.analyze(h1_df, symbol, "H1")
+            h1_zones = h1_analysis.active_zones
+            for pool in h1_analysis.liquidity_pools:
+                if pool.level not in htf_liq_targets:
+                    htf_liq_targets.append(pool.level)
+
+        # Step 3: M15 entry signals
+        m15_df = self.bridge.get_candles(symbol, "M15", count=200)
+        if m15_df is None or m15_df.empty:
+            return
+
+        m15_analysis = self.smc_engine.analyze(m15_df, symbol, "M15")
+
+        signals = self.smc_engine.generate_signals(
+            m15_analysis,
+            symbol=symbol,
+            timeframe="M15",
+            htf_zones=h1_zones if h1_zones else None,
+            h4_trend=h4_trend,
+            amd_phase=m15_analysis.amd_phase,
+            htf_liquidity_targets=htf_liq_targets if htf_liq_targets else None,
+            pip_size=0.10,       # Gold
+            max_sl_pips=30.0,
+            min_sl_pips=10.0,
+        )
+
+        min_rr = self.config["trading"]["min_rr"]
         for sig in signals:
-            if sig.rr_ratio < self.config["trading"]["min_rr"]:
+            if sig.confluence_score < confluence_min:
+                continue
+            if sig.rr_ratio < min_rr:
                 continue
             if not self.risk_manager.validate_trade(sig):
                 continue
@@ -219,7 +268,7 @@ class AutoTrader:
                 signal_dict["session"] = self.session_profiler.get_current_session(utc_now)
                 signal_dict["smc_setup_type"] = sig.reasoning[0] if sig.reasoning else ""
                 self.journal.open_entry(signal_dict, execution_result)
-                logger.info("Trade opened: %s %s @ %.5f | SL: %.5f | TP: %.5f | RR: %.2f",
+                logger.info("Trade opened: %s %s @ %.2f | SL: %.2f | TP: %.2f | RR: %.2f",
                             direction_str, sig.symbol, sig.entry_price, sig.sl, sig.tp, sig.rr_ratio)
 
     def _run_asian_profiling(self, symbols: list[str], utc_now: datetime) -> None:
@@ -252,8 +301,23 @@ class AutoTrader:
 
     def _on_trade_closed(self, ticket: int, pnl: float = 0.0) -> None:
         logger.info("Trade %d closed (PnL: $%.2f). Running post-trade analysis.", ticket, pnl)
+
+        # Grab position data BEFORE removing from state (needed for CSV log)
+        saved = self.state.load_state()
+        pos_data = None
+        for p in saved.get("open_positions", []):
+            if p.get("ticket") == ticket:
+                pos_data = p
+                break
+
         self.risk_manager.record_trade_result(pnl)
         self.state.remove_position(ticket)
+
+        # Log to CSV
+        try:
+            self._log_trade_csv(ticket, pnl, pos_data)
+        except Exception as e:
+            logger.error("CSV trade log error: %s", e)
 
         # Log closure to journal
         try:
@@ -273,6 +337,137 @@ class AutoTrader:
                                    [p.pattern_name for p in failing])
         except Exception as e:
             logger.error("Reflection error: %s", e)
+
+    # ── CSV Trade Logger ─────────────────────────────────────────────
+
+    TRADE_CSV_HEADERS = [
+        "date", "symbol", "direction", "entry_price", "exit_price",
+        "sl", "tp", "pnl_dollars", "rr_achieved", "result",
+        "session", "duration_mins",
+    ]
+
+    def _log_trade_csv(
+        self, ticket: int, pnl: float, pos_data: dict | None,
+    ) -> None:
+        """Append a closed trade row to logs/trades.csv."""
+        logs_dir = Path("logs")
+        logs_dir.mkdir(exist_ok=True)
+        csv_path = logs_dir / "trades.csv"
+
+        write_header = not csv_path.exists()
+
+        now = datetime.now(timezone.utc)
+        symbol = pos_data.get("symbol", "XAUUSD") if pos_data else "XAUUSD"
+        direction = pos_data.get("type", "") if pos_data else ""
+        entry_price = pos_data.get("price_open", 0.0) if pos_data else 0.0
+        sl = pos_data.get("sl", 0.0) if pos_data else 0.0
+        tp = pos_data.get("tp", 0.0) if pos_data else 0.0
+
+        # Get current price as approximate exit
+        try:
+            info = self.bridge.get_symbol_info(symbol)
+            exit_price = info.get("bid", 0.0) if direction == "BUY" else info.get("ask", 0.0)
+        except Exception:
+            exit_price = 0.0
+
+        # RR achieved
+        risk_dist = abs(entry_price - sl) if entry_price and sl else 1.0
+        rr = round(abs(pnl / 100.0) / risk_dist, 2) if risk_dist > 0 else 0.0  # pnl per 0.01 lot approx
+
+        result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BE"
+        session = self.session_profiler.get_current_session(now)
+
+        # Duration
+        open_time = pos_data.get("time", 0) if pos_data else 0
+        if open_time:
+            duration = int((now.timestamp() - open_time) / 60)
+        else:
+            duration = 0
+
+        row = {
+            "date": now.strftime("%Y-%m-%d %H:%M"),
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": f"{entry_price:.2f}",
+            "exit_price": f"{exit_price:.2f}",
+            "sl": f"{sl:.2f}",
+            "tp": f"{tp:.2f}",
+            "pnl_dollars": f"{pnl:.2f}",
+            "rr_achieved": f"{rr:.2f}",
+            "result": result,
+            "session": session,
+            "duration_mins": str(duration),
+        }
+
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.TRADE_CSV_HEADERS)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+
+        logger.info("Trade %d logged to CSV: %s %s PnL=$%.2f RR=%.2f",
+                     ticket, result, symbol, pnl, rr)
+
+        # Check if we need a monthly summary
+        self._maybe_write_monthly_summary(csv_path, now)
+
+    def _maybe_write_monthly_summary(self, csv_path: Path, now: datetime) -> None:
+        """Append a MONTH_SUMMARY row if the month just changed."""
+        marker_path = Path("logs/.last_summary_month")
+        current_month = now.strftime("%Y-%m")
+
+        if marker_path.exists():
+            last_month = marker_path.read_text().strip()
+            if last_month == current_month:
+                return  # already summarized this month
+            summary_month = last_month
+        else:
+            marker_path.parent.mkdir(exist_ok=True)
+            marker_path.write_text(current_month)
+            return  # first trade ever, no previous month to summarize
+
+        # Read all trades for the previous month
+        try:
+            with open(csv_path, "r", newline="") as f:
+                all_trades = [r for r in csv.DictReader(f)
+                              if r.get("date", "").startswith(summary_month)
+                              and r.get("result") in ("WIN", "LOSS", "BE")]
+        except Exception:
+            marker_path.write_text(current_month)
+            return
+
+        if not all_trades:
+            marker_path.write_text(current_month)
+            return
+
+        total_pnl = sum(float(t.get("pnl_dollars", 0)) for t in all_trades)
+        wins = sum(1 for t in all_trades if t["result"] == "WIN")
+        win_rate = (wins / len(all_trades) * 100) if all_trades else 0
+        rr_vals = [float(t.get("rr_achieved", 0)) for t in all_trades if float(t.get("rr_achieved", 0)) > 0]
+        avg_rr = sum(rr_vals) / len(rr_vals) if rr_vals else 0
+
+        summary = {
+            "date": f"MONTH_SUMMARY_{summary_month}",
+            "symbol": "XAUUSD",
+            "direction": "-",
+            "entry_price": "-",
+            "exit_price": "-",
+            "sl": "-",
+            "tp": "-",
+            "pnl_dollars": f"{total_pnl:.2f}",
+            "rr_achieved": f"{avg_rr:.2f}",
+            "result": f"{win_rate:.1f}%WR",
+            "session": f"{len(all_trades)}trades",
+            "duration_mins": "-",
+        }
+
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.TRADE_CSV_HEADERS)
+            writer.writerow(summary)
+
+        logger.info("Monthly summary for %s: PnL=$%.2f | WR=%.1f%% | Avg RR=%.2f | %d trades",
+                     summary_month, total_pnl, win_rate, avg_rr, len(all_trades))
+        marker_path.write_text(current_month)
 
     def _shutdown_handler(self, signum: int, frame) -> None:
         logger.info("Shutdown signal received. Cleaning up...")
