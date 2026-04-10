@@ -65,8 +65,8 @@ class AutoTrader:
             session_profiler=self.session_profiler,
         )
 
-        # Risk
-        self.risk_manager = RiskManager(self.config["trading"], self.bridge)
+        # Risk (pass state_manager for persistence across restarts)
+        self.risk_manager = RiskManager(self.config["trading"], self.bridge, self.state)
         self.news_filter = NewsFilter()
 
         # Cloud & Reflection
@@ -142,6 +142,12 @@ class AutoTrader:
 
         while self.running:
             try:
+                # Ensure MT5 is still connected (auto-reconnect if dropped)
+                if not self.bridge.ensure_connected():
+                    logger.error("MT5 reconnect failed. Retrying in 30s...")
+                    time.sleep(30)
+                    continue
+
                 utc_now = datetime.now(timezone.utc)
 
                 # Check session
@@ -234,6 +240,17 @@ class AutoTrader:
             min_sl_pips=10.0,
         )
 
+        # Spread check — skip if spread is too wide (spike protection)
+        max_spread_pips = self.config["trading"].get("max_spread_pips", 5.0)
+        try:
+            sym_info = self.bridge.get_symbol_info(symbol)
+            current_spread = sym_info["spread"] * sym_info["point"] / 0.10  # convert to pips for gold
+            if current_spread > max_spread_pips:
+                logger.info("Skipping %s: spread %.1f pips > max %.1f pips", symbol, current_spread, max_spread_pips)
+                return
+        except Exception:
+            pass  # proceed if spread check fails — better to trade than miss everything
+
         min_rr = self.config["trading"]["min_rr"]
         for sig in signals:
             if sig.confluence_score < confluence_min:
@@ -297,7 +314,9 @@ class AutoTrader:
 
         closed_tickets = saved_tickets - live_tickets
         for ticket in closed_tickets:
-            self._on_trade_closed(ticket)
+            # Fetch REAL PnL from MT5 deal history (not 0.0)
+            actual_pnl = self.bridge.get_deal_profit(ticket)
+            self._on_trade_closed(ticket, pnl=actual_pnl)
 
     def _on_trade_closed(self, ticket: int, pnl: float = 0.0) -> None:
         logger.info("Trade %d closed (PnL: $%.2f). Running post-trade analysis.", ticket, pnl)

@@ -27,6 +27,7 @@ class MT5Bridge:
 
     def __init__(self) -> None:
         self._connected: bool = False
+        self._credentials: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Connection
@@ -67,6 +68,10 @@ class MT5Bridge:
                     continue
 
                 self._connected = True
+                self._credentials = {
+                    "login": login, "password": password,
+                    "server": server, "mt5_path": mt5_path,
+                }
                 logger.info("MT5 connected successfully on attempt %d", attempt)
                 return True
 
@@ -88,6 +93,29 @@ class MT5Bridge:
                 logger.info("MT5 disconnected")
         except Exception:
             logger.exception("Error during MT5 disconnect")
+
+    def ensure_connected(self) -> bool:
+        """Check MT5 connection is alive; reconnect if dropped."""
+        try:
+            info = mt5.terminal_info()
+            if info is not None:
+                return True
+        except Exception:
+            pass
+
+        logger.warning("MT5 connection lost. Attempting reconnect...")
+        self._connected = False
+
+        if not self._credentials:
+            logger.error("No stored credentials — cannot auto-reconnect")
+            return False
+
+        return self.connect(
+            login=self._credentials["login"],
+            password=self._credentials["password"],
+            server=self._credentials["server"],
+            mt5_path=self._credentials.get("mt5_path"),
+        )
 
     # ------------------------------------------------------------------
     # Account & Market Data
@@ -214,19 +242,40 @@ class MT5Bridge:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            result = mt5.order_send(request)
-            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                error_detail = result.comment if result else mt5.last_error()
-                raise RuntimeError(f"order_send failed: {error_detail}")
+            # Retry loop for transient failures (requotes, rejects)
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                result = mt5.order_send(request)
 
-            logger.info(
-                "Order placed: ticket=%d symbol=%s type=%s vol=%.2f",
-                result.order,
-                symbol,
-                order_type,
-                volume,
-            )
-            return result.order
+                if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logger.info(
+                        "Order placed: ticket=%d symbol=%s type=%s vol=%.2f (attempt %d)",
+                        result.order, symbol, order_type, volume, attempt,
+                    )
+                    return result.order
+
+                retcode = result.retcode if result else -1
+                error_detail = result.comment if result else str(mt5.last_error())
+
+                # Requote — refresh price and retry
+                if retcode == mt5.TRADE_RETCODE_REQUOTE and attempt < max_attempts:
+                    logger.warning("Requote on %s (attempt %d) — refreshing price", symbol, attempt)
+                    tick = mt5.symbol_info_tick(symbol)
+                    if tick:
+                        request["price"] = tick.ask if "BUY" in order_type.upper() else tick.bid
+                    time.sleep(0.3)
+                    continue
+
+                # Temporary reject — wait and retry
+                if retcode == mt5.TRADE_RETCODE_REJECT and attempt < max_attempts:
+                    logger.warning("Order rejected on %s (attempt %d) — retrying", symbol, attempt)
+                    time.sleep(0.5)
+                    continue
+
+                # Permanent failure
+                raise RuntimeError(f"order_send failed after {attempt} attempts: {error_detail}")
+
+            raise RuntimeError(f"order_send failed after {max_attempts} attempts")
 
         except Exception:
             logger.exception("Failed to place order %s %s", order_type, symbol)
@@ -351,6 +400,32 @@ class MT5Bridge:
         except Exception:
             logger.exception("Failed to close position %d", ticket)
             raise
+
+    # ------------------------------------------------------------------
+    # Deal History
+    # ------------------------------------------------------------------
+
+    def get_deal_profit(self, ticket: int) -> float:
+        """Fetch total realized P&L for a position ticket from MT5 deal history."""
+        try:
+            # Search deals from last 30 days for this position
+            from datetime import datetime, timedelta, timezone
+            date_from = datetime.now(timezone.utc) - timedelta(days=30)
+            date_to = datetime.now(timezone.utc) + timedelta(days=1)
+
+            deals = mt5.history_deals_get(date_from, date_to, position=ticket)
+            if deals is None or len(deals) == 0:
+                logger.warning("No deals found for ticket %d", ticket)
+                return 0.0
+
+            total_profit = sum(d.profit + d.commission + d.swap for d in deals)
+            logger.info("Deal history for ticket %d: profit=%.2f (from %d deals)",
+                        ticket, total_profit, len(deals))
+            return total_profit
+
+        except Exception:
+            logger.exception("Failed to get deal profit for ticket %d", ticket)
+            return 0.0
 
     # ------------------------------------------------------------------
     # Position / Order Queries

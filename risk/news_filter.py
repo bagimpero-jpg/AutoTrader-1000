@@ -1,28 +1,29 @@
-"""High-impact news event filter for FTMO compliance."""
+"""High-impact news event filter for FTMO compliance.
+
+Fetches economic calendar from Forex Factory (free, no auth) and blocks
+trading within a configurable buffer around high-impact USD events.
+Falls back to local YAML if the API is unreachable.
+"""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-HIGH_IMPACT_EVENTS = [
-    "NFP",
-    "FOMC",
-    "CPI",
-    "PPI",
-    "GDP",
-    "Retail Sales",
-    "Interest Rate Decision",
-    "ECB Press Conference",
-    "BOE Interest Rate",
-    "Unemployment Claims",
-    "PMI",
-    "Core PCE",
+CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+
+HIGH_IMPACT_KEYWORDS = [
+    "nonfarm", "nfp", "fomc", "cpi", "ppi", "gdp", "retail sales",
+    "interest rate", "ecb", "boe", "unemployment", "pmi", "core pce",
+    "fed chair", "monetary policy", "consumer confidence",
 ]
 
 
@@ -42,12 +43,90 @@ class NewsFilter:
     def __init__(self, events_path: str = "config/news_events.yaml", buffer_minutes: int = 30) -> None:
         self.buffer_minutes = buffer_minutes
         self.events: list[NewsEvent] = []
-        self._load_events(events_path)
+        self._events_path = events_path
+        self._last_fetch: datetime | None = None
+        self._refresh_interval = timedelta(hours=6)
 
-    def _load_events(self, path: str) -> None:
+        # Try live calendar first, fall back to local YAML
+        fetched = self._fetch_calendar()
+        if not fetched:
+            self._load_events_yaml(events_path)
+
+    # ------------------------------------------------------------------
+    # Live calendar fetch
+    # ------------------------------------------------------------------
+
+    def _fetch_calendar(self) -> bool:
+        """Fetch this week's economic calendar from Forex Factory. Returns True on success."""
+        try:
+            req = Request(CALENDAR_URL, headers={"User-Agent": "AutoTrader1000/1.0"})
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+
+            count = 0
+            for item in data:
+                # Only keep high-impact events
+                impact = item.get("impact", "").strip().lower()
+                if impact != "high":
+                    continue
+
+                # Parse date/time
+                date_str = item.get("date", "")
+                if not date_str:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+
+                title = item.get("title", "Unknown Event")
+                currency = item.get("country", "USD").upper()
+
+                self.events.append(NewsEvent(
+                    name=title,
+                    timestamp=ts,
+                    currency=currency,
+                    impact="HIGH",
+                    buffer_minutes=self.buffer_minutes,
+                ))
+                count += 1
+
+            self._last_fetch = datetime.now(timezone.utc)
+            if count > 0:
+                logger.info("Fetched %d high-impact news events from calendar API", count)
+            else:
+                logger.info("Calendar API returned 0 high-impact events this week")
+            return True
+
+        except (URLError, json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to fetch calendar API: %s — falling back to local YAML", e)
+            return False
+
+    def _should_refresh(self) -> bool:
+        """Return True if calendar data is stale (>6 hours old)."""
+        if self._last_fetch is None:
+            return True
+        return datetime.now(timezone.utc) - self._last_fetch > self._refresh_interval
+
+    def _maybe_refresh(self) -> None:
+        """Refresh calendar if data is stale."""
+        if self._should_refresh():
+            old_count = len(self.events)
+            self.events.clear()
+            if not self._fetch_calendar():
+                self._load_events_yaml(self._events_path)
+            logger.info("Calendar refreshed: %d → %d events", old_count, len(self.events))
+
+    # ------------------------------------------------------------------
+    # Local YAML fallback
+    # ------------------------------------------------------------------
+
+    def _load_events_yaml(self, path: str) -> None:
         events_file = Path(path)
         if not events_file.exists():
-            logger.info("No news events file at %s — news filter inactive", path)
+            logger.warning("No news events file at %s and API failed — news filter has NO events!", path)
             return
 
         try:
@@ -62,13 +141,20 @@ class NewsFilter:
                     impact=entry.get("impact", "HIGH"),
                     buffer_minutes=entry.get("buffer_minutes", self.buffer_minutes),
                 ))
-            logger.info("Loaded %d news events", len(self.events))
+            logger.info("Loaded %d news events from local YAML", len(self.events))
         except Exception:
             logger.exception("Failed to load news events from %s", path)
+
+    # ------------------------------------------------------------------
+    # Core check
+    # ------------------------------------------------------------------
 
     def is_blocked(self, symbol: str, utc_now: datetime | None = None) -> tuple[bool, str]:
         if utc_now is None:
             utc_now = datetime.now(timezone.utc)
+
+        # Auto-refresh calendar every 6 hours
+        self._maybe_refresh()
 
         symbol_currencies = self._extract_currencies(symbol)
 
