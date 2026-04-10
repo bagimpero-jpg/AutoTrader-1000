@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Enforces per-trade, daily, and total drawdown limits for FTMO compliance."""
 
-    def __init__(self, trading_config: dict, bridge) -> None:
+    def __init__(self, trading_config: dict, bridge, state_manager=None) -> None:
         self.config = trading_config
         self.bridge = bridge
+        self._state_manager = state_manager
         self.base_balance: float = trading_config.get("base_balance", 10_000)
         self.max_risk_percent: float = trading_config.get("risk_percent", 1.0)
         self.min_rr: float = trading_config.get("min_rr", 2.0)
@@ -33,6 +34,9 @@ class RiskManager:
         self._daily_loss_shutdown: float = self.base_balance * trading_config.get(
             "daily_loss_shutdown_percent", 2.0
         ) / 100
+
+        # Restore persisted state (survives restarts)
+        self._load_persisted_state()
 
     # ------------------------------------------------------------------
     # Dynamic risk (recovery mode)
@@ -167,12 +171,14 @@ class RiskManager:
                     self._consecutive_losses,
                 )
             self._consecutive_losses = 0
+        self._persist_state()
 
     def record_trade_opened(self) -> None:
         """Increment the daily trade counter. Call after a trade is executed."""
         self._maybe_reset_daily_counters()
         self._trades_today += 1
         logger.info("Trades today: %d/%d", self._trades_today, self._max_trades_per_day)
+        self._persist_state()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -186,3 +192,56 @@ class RiskManager:
             self._trades_today = 0
             self._last_reset_date = today
             self._trades_reset_date = today
+            self._persist_state()
+
+    # ------------------------------------------------------------------
+    # State persistence (survives restarts)
+    # ------------------------------------------------------------------
+
+    def _persist_state(self) -> None:
+        """Save risk counters to state manager JSON."""
+        if self._state_manager is None:
+            return
+        try:
+            state = self._state_manager.load_state()
+            state["risk_state"] = {
+                "daily_loss_today": self._daily_loss_today,
+                "consecutive_losses": self._consecutive_losses,
+                "trades_today": self._trades_today,
+                "last_reset_date": self._last_reset_date,
+            }
+            self._state_manager.save_state(state)
+        except Exception:
+            logger.exception("Failed to persist risk state")
+
+    def _load_persisted_state(self) -> None:
+        """Restore risk counters from state manager JSON."""
+        if self._state_manager is None:
+            return
+        try:
+            state = self._state_manager.load_state()
+            risk = state.get("risk_state", {})
+            if not risk:
+                return
+
+            saved_date = risk.get("last_reset_date", "")
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            if saved_date == today:
+                # Same day — restore counters
+                self._daily_loss_today = risk.get("daily_loss_today", 0.0)
+                self._trades_today = risk.get("trades_today", 0)
+                logger.info(
+                    "Restored risk state: daily_loss=$%.2f, trades=%d, consecutive_losses=%d",
+                    self._daily_loss_today, self._trades_today, risk.get("consecutive_losses", 0),
+                )
+            else:
+                # New day — only restore consecutive losses (carries across days)
+                logger.info("New trading day — daily counters reset, keeping consecutive losses")
+
+            # Consecutive losses always persist (not day-bound)
+            self._consecutive_losses = risk.get("consecutive_losses", 0)
+            self._last_reset_date = today
+
+        except Exception:
+            logger.exception("Failed to load persisted risk state")
