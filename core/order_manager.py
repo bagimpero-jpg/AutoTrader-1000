@@ -92,6 +92,20 @@ class OrderManager:
                 account_balance=account["balance"],
             )
 
+            # Clamp volume to what free margin can support (leave 20% buffer)
+            max_margin_volume = self._bridge.get_max_volume_for_margin(
+                symbol, direction, volume, account["free_margin"] * 0.80,
+            )
+            if max_margin_volume < volume:
+                logger.warning(
+                    "Lot size clamped: %.2f → %.2f (margin limit)",
+                    volume, max_margin_volume,
+                )
+                volume = max_margin_volume
+                if volume < sym_info["volume_min"]:
+                    logger.warning("Cannot afford minimum lot size for %s — skipping", symbol)
+                    return {}
+
             ticket = self._bridge.place_order(
                 symbol=symbol,
                 order_type=direction,

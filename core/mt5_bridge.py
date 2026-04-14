@@ -402,6 +402,54 @@ class MT5Bridge:
             raise
 
     # ------------------------------------------------------------------
+    # Margin Calculation
+    # ------------------------------------------------------------------
+
+    def get_max_volume_for_margin(
+        self, symbol: str, direction: str, desired_volume: float, max_margin: float,
+    ) -> float:
+        """Return the largest volume <= desired_volume that fits within max_margin."""
+        try:
+            order_type = mt5.ORDER_TYPE_BUY if "BUY" in direction.upper() else mt5.ORDER_TYPE_SELL
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return desired_volume  # can't check, proceed with original
+
+            price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+            sym = mt5.symbol_info(symbol)
+            if sym is None:
+                return desired_volume
+
+            # Check margin for desired volume
+            margin = mt5.order_calc_margin(order_type, symbol, desired_volume, price)
+            if margin is not None and margin <= max_margin:
+                return desired_volume  # fits fine
+
+            # Binary search for max affordable volume
+            vol_min = sym.volume_min
+            vol_max = desired_volume
+            best = vol_min
+
+            for _ in range(20):  # converges fast
+                mid = round((vol_min + vol_max) / 2, 2)
+                if mid < sym.volume_min:
+                    break
+                m = mt5.order_calc_margin(order_type, symbol, mid, price)
+                if m is not None and m <= max_margin:
+                    best = mid
+                    vol_min = mid + sym.volume_step
+                else:
+                    vol_max = mid - sym.volume_step
+
+            # Snap to volume_step
+            steps = int(best / sym.volume_step)
+            return round(steps * sym.volume_step, 2)
+
+        except Exception:
+            logger.exception("Margin calc failed for %s — using desired volume", symbol)
+            return desired_volume
+
+    # ------------------------------------------------------------------
     # Deal History
     # ------------------------------------------------------------------
 
