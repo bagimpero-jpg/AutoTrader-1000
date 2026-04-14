@@ -124,6 +124,12 @@ class SMCEngine:
         timeframe: str,
     ) -> AnalysisResult:
         """Run the full SMC analysis pipeline on the provided OHLCV dataframe."""
+        # Normalize: ensure 'time' column is the DatetimeIndex (MT5 bridge returns it as a column)
+        if "time" in df.columns and not isinstance(df.index, pd.DatetimeIndex):
+            df = df.set_index("time")
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+
         # 1. Structure
         swing_points = self.structure.detect_swing_points(df)
         trend = self.structure.get_current_trend(swing_points)

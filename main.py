@@ -260,7 +260,9 @@ class AutoTrader:
             if not self.risk_manager.validate_trade(sig):
                 continue
 
-            direction_str = sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction)
+            raw_dir = sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction)
+            direction_map = {"BULLISH": "BUY", "BEARISH": "SELL", "BUY": "BUY", "SELL": "SELL"}
+            direction_str = direction_map.get(raw_dir.upper(), raw_dir)
             trade_dict = {
                 "symbol": sig.symbol,
                 "direction": direction_str,
@@ -268,7 +270,7 @@ class AutoTrader:
                 "sl": sig.sl,
                 "tp": sig.tp,
                 "risk_percent": self.risk_manager.get_risk_for_signal(sig),
-                "comment": f"SMC|{sig.confluence_score}|{'|'.join(sig.reasoning[:2])}",
+                "comment": f"SMC|{sig.confluence_score}"[:31],
             }
 
             try:
