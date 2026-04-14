@@ -68,6 +68,7 @@ class OrderManager:
         Signal keys
         -----------
         symbol, direction (BUY/SELL), entry_price, sl, tp, risk_percent, comment
+        order_type (optional): BUY, SELL, BUY_LIMIT, SELL_LIMIT — defaults to direction
 
         Returns
         -------
@@ -80,11 +81,26 @@ class OrderManager:
         risk_percent: float = signal["risk_percent"]
         comment: str = signal.get("comment", "")
 
+        # Determine order type — MARKET by default, LIMIT if specified
+        order_type: str = signal.get("order_type", direction).upper()
+        is_market = order_type in ("BUY", "SELL")
+
         try:
             account = self._bridge.get_account_info()
             sym_info = self._bridge.get_symbol_info(symbol)
 
-            sl_distance = abs(signal["entry_price"] - sl)
+            # A3: For MARKET orders, compute SL distance from CURRENT price
+            # (not signal entry price). For LIMIT orders, use signal entry.
+            if is_market:
+                current_price = sym_info["ask"] if direction == "BUY" else sym_info["bid"]
+                sl_distance = abs(current_price - sl)
+            else:
+                sl_distance = abs(signal["entry_price"] - sl)
+
+            if sl_distance <= 0:
+                logger.warning("SL distance is zero for %s — skipping", symbol)
+                return {}
+
             volume = self.calculate_lot_size(
                 symbol_info=sym_info,
                 sl_distance=sl_distance,
@@ -106,23 +122,77 @@ class OrderManager:
                     logger.warning("Cannot afford minimum lot size for %s — skipping", symbol)
                     return {}
 
-            ticket = self._bridge.place_order(
+            # Place the order (returns dict with ticket, price, volume)
+            result = self._bridge.place_order(
                 symbol=symbol,
-                order_type=direction,
+                order_type=order_type,
                 volume=volume,
-                price=signal.get("entry_price"),
+                price=signal.get("entry_price") if not is_market else None,
                 sl=sl,
                 tp=tp,
                 comment=comment,
             )
 
+            ticket: int = result["ticket"]
+            actual_fill: float = result["price"]
+            actual_volume: float = result["volume"]
+
+            # A2: For MARKET orders, recalculate SL/TP from actual fill price
+            # to preserve intended risk/reward distances (like the backtest does)
+            if is_market and actual_fill > 0:
+                signal_risk = abs(signal["entry_price"] - signal["sl"])
+                signal_reward = abs(signal["tp"] - signal["entry_price"])
+
+                if direction == "BUY":
+                    adjusted_sl = actual_fill - signal_risk
+                    adjusted_tp = actual_fill + signal_reward
+                else:
+                    adjusted_sl = actual_fill + signal_risk
+                    adjusted_tp = actual_fill - signal_reward
+
+                # Clamp SL to max allowed distance if configured
+                max_sl_pips = signal.get("max_sl_pips", 0)
+                pip_size = signal.get("pip_size", 0.10)
+                if max_sl_pips > 0:
+                    max_risk = max_sl_pips * pip_size
+                    actual_risk = abs(actual_fill - adjusted_sl)
+                    if actual_risk > max_risk:
+                        if direction == "BUY":
+                            adjusted_sl = actual_fill - max_risk
+                            adjusted_tp = actual_fill + max_risk * 2
+                        else:
+                            adjusted_sl = actual_fill + max_risk
+                            adjusted_tp = actual_fill - max_risk * 2
+
+                # Round SL/TP to symbol's digit precision
+                digits = sym_info.get("digits", 2)
+                adjusted_sl = round(adjusted_sl, digits)
+                adjusted_tp = round(adjusted_tp, digits)
+
+                try:
+                    self._bridge.modify_order(ticket, sl=adjusted_sl, tp=adjusted_tp)
+                    logger.info(
+                        "SL/TP recalculated from fill: SL=%.5f→%.5f TP=%.5f→%.5f",
+                        sl, adjusted_sl, tp, adjusted_tp,
+                    )
+                    sl = adjusted_sl
+                    tp = adjusted_tp
+                except Exception:
+                    logger.exception("Failed to recalculate SL/TP for ticket %d", ticket)
+
+                # Use actual fill price for all downstream
+                entry_price = actual_fill
+            else:
+                entry_price = signal["entry_price"]
+
+            # A4: Store ACTUAL fill price in state (not signal entry)
             self._state.update_position(
                 ticket,
                 {
                     "symbol": symbol,
                     "direction": direction,
-                    "volume": volume,
-                    "entry_price": signal["entry_price"],
+                    "volume": actual_volume,
+                    "entry_price": entry_price,
                     "sl": sl,
                     "tp": tp,
                     "comment": comment,
@@ -131,16 +201,17 @@ class OrderManager:
             )
 
             logger.info(
-                "Trade executed: ticket=%d %s %s %.2f lots",
+                "Trade executed: ticket=%d %s %s %.2f lots @ %.5f",
                 ticket,
                 direction,
                 symbol,
-                volume,
+                actual_volume,
+                entry_price,
             )
             return {
                 "ticket": ticket,
-                "entry_price": signal["entry_price"],
-                "volume": volume,
+                "entry_price": entry_price,
+                "volume": actual_volume,
                 "symbol": symbol,
                 "direction": direction,
             }

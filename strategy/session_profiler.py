@@ -82,6 +82,12 @@ class SessionProfiler:
         if df.empty:
             return "ACCUMULATION"
 
+        # Normalize index if needed (same fix as get_asian_range)
+        if "time" in df.columns and not isinstance(df.index, pd.DatetimeIndex):
+            df = df.set_index("time")
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+
         latest = df.iloc[-1]
         high = session_range["high"]
         low = session_range["low"]

@@ -7,6 +7,8 @@ trading:
   max_daily_loss_percent: 5.0
   max_total_loss_percent: 10.0
   base_balance: 10000
+  max_positions_per_symbol: 1
+  max_total_exposure_percent: 2.0
 
 sessions:
   asian: {start: "00:00", end: "08:00"}
@@ -19,6 +21,8 @@ smc:
   liquidity_touch_threshold: 3
   confluence_min_score: 3
   swing_lookback: 5
+  max_sl_pips: 30.0
+  min_sl_pips: 10.0
 
 cloud:
   backend: "google_sheets"

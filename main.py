@@ -8,7 +8,7 @@ import signal
 import sys
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -73,6 +73,13 @@ class AutoTrader:
         self.cloud_logger = self._init_cloud_logger()
         self.journal = TradeJournal(self.cloud_logger)
         self.reflection = SelfReflection(self.journal)
+
+        # B3: Zone deduplication — prevent same zone firing multiple signals
+        self._used_zone_keys: set[str] = set()
+        self._zone_keys_date: str = ""
+
+        # A1: Pending limit order tracking {zone_key: (signal_dict, expiry_datetime)}
+        self._pending_orders: dict[str, tuple[dict, datetime]] = {}
 
         # Load knowledge base
         kb_path = Path("knowledge_base")
@@ -150,6 +157,15 @@ class AutoTrader:
 
                 utc_now = datetime.now(timezone.utc)
 
+                # B3: Reset zone keys daily at midnight
+                today_str = utc_now.strftime("%Y-%m-%d")
+                if today_str != self._zone_keys_date:
+                    self._used_zone_keys.clear()
+                    self._zone_keys_date = today_str
+
+                # Expire stale pending limit orders
+                self._expire_pending_orders(utc_now)
+
                 # Check session
                 if not self.session_profiler.is_execution_allowed(utc_now):
                     session = self.session_profiler.get_current_session(utc_now)
@@ -182,6 +198,21 @@ class AutoTrader:
                 })
                 time.sleep(5)
 
+    def _expire_pending_orders(self, utc_now: datetime) -> None:
+        """Cancel expired pending limit orders on MT5."""
+        expired_keys = []
+        for zone_key, (sig_dict, expiry) in self._pending_orders.items():
+            if utc_now >= expiry:
+                expired_keys.append(zone_key)
+                # Cancel on MT5 if it has a pending ticket
+                pending_ticket = sig_dict.get("_pending_ticket")
+                if pending_ticket:
+                    self.bridge.cancel_pending_order(pending_ticket)
+                    logger.info("Pending order expired: zone_key=%s ticket=%d", zone_key, pending_ticket)
+
+        for key in expired_keys:
+            del self._pending_orders[key]
+
     def _scan_multi_tf(
         self, symbol: str, utc_now: datetime,
         swing_lookback: int = 5, confluence_min: int = 3,
@@ -191,6 +222,13 @@ class AutoTrader:
         H4 → trend bias, H1 → zone context, M15 → entry signals.
         """
         from strategy.structures import TrendDirection
+
+        # B1: Max 1 position per symbol
+        max_pos_per_symbol = self.config["trading"].get("max_positions_per_symbol", 1)
+        open_positions = self.bridge.get_open_positions()
+        symbol_positions = [p for p in open_positions if p["symbol"] == symbol]
+        if len(symbol_positions) >= max_pos_per_symbol:
+            return
 
         # Check news filter
         blocked, reason = self.news_filter.is_blocked(symbol, utc_now)
@@ -227,6 +265,12 @@ class AutoTrader:
 
         m15_analysis = self.smc_engine.analyze(m15_df, symbol, "M15")
 
+        # C3: Read configurable SL pip limits from config
+        smc_cfg = self.config.get("smc", {})
+        max_sl_pips = smc_cfg.get("max_sl_pips", 30.0)
+        min_sl_pips = smc_cfg.get("min_sl_pips", 10.0)
+        pip_size = 0.10  # Gold: $1 = 10 pips
+
         signals = self.smc_engine.generate_signals(
             m15_analysis,
             symbol=symbol,
@@ -235,21 +279,21 @@ class AutoTrader:
             h4_trend=h4_trend,
             amd_phase=m15_analysis.amd_phase,
             htf_liquidity_targets=htf_liq_targets if htf_liq_targets else None,
-            pip_size=0.10,       # Gold
-            max_sl_pips=30.0,
-            min_sl_pips=10.0,
+            pip_size=pip_size,
+            max_sl_pips=max_sl_pips,
+            min_sl_pips=min_sl_pips,
         )
 
         # Spread check — skip if spread is too wide (spike protection)
         max_spread_pips = self.config["trading"].get("max_spread_pips", 5.0)
         try:
             sym_info = self.bridge.get_symbol_info(symbol)
-            current_spread = sym_info["spread"] * sym_info["point"] / 0.10  # convert to pips for gold
+            current_spread = sym_info["spread"] * sym_info["point"] / pip_size
             if current_spread > max_spread_pips:
                 logger.info("Skipping %s: spread %.1f pips > max %.1f pips", symbol, current_spread, max_spread_pips)
                 return
         except Exception:
-            pass  # proceed if spread check fails — better to trade than miss everything
+            pass  # proceed if spread check fails
 
         min_rr = self.config["trading"]["min_rr"]
         for sig in signals:
@@ -260,19 +304,81 @@ class AutoTrader:
             if not self.risk_manager.validate_trade(sig):
                 continue
 
+            # B3: Zone deduplication — same zone should only fire once per day
+            zone_key = f"{symbol}_{round(sig.entry_price, 1)}_{round(sig.sl, 1)}"
+            if zone_key in self._used_zone_keys:
+                continue
+            self._used_zone_keys.add(zone_key)
+
             raw_dir = sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction)
             direction_map = {"BULLISH": "BUY", "BEARISH": "SELL", "BUY": "BUY", "SELL": "SELL"}
             direction_str = direction_map.get(raw_dir.upper(), raw_dir)
+
+            # A1: Determine order type based on current price vs signal entry
+            current_ask = sym_info["ask"]
+            current_bid = sym_info["bid"]
+            order_type = direction_str  # default MARKET
+
+            if direction_str == "BUY":
+                gap_from_zone = current_ask - sig.entry_price
+                max_gap = max_sl_pips * pip_size
+
+                if gap_from_zone > max_gap:
+                    # Price too far above zone — skip
+                    logger.info("Skipping BUY: price %.2f too far from zone %.2f (gap %.1f pips > max %.1f)",
+                                current_ask, sig.entry_price, gap_from_zone / pip_size, max_sl_pips)
+                    continue
+                elif current_ask <= sig.entry_price:
+                    # Price below zone — use LIMIT order (price hasn't reached zone yet)
+                    order_type = "BUY_LIMIT"
+                # else: price is within reasonable range of zone — MARKET order
+
+            else:  # SELL
+                gap_from_zone = sig.entry_price - current_bid
+                max_gap = max_sl_pips * pip_size
+
+                if gap_from_zone > max_gap:
+                    # Price too far below zone — skip
+                    logger.info("Skipping SELL: price %.2f too far from zone %.2f (gap %.1f pips > max %.1f)",
+                                current_bid, sig.entry_price, gap_from_zone / pip_size, max_sl_pips)
+                    continue
+                elif current_bid >= sig.entry_price:
+                    # Price above zone — use LIMIT order
+                    order_type = "SELL_LIMIT"
+                # else: price is within reasonable range of zone — MARKET order
+
             trade_dict = {
                 "symbol": sig.symbol,
                 "direction": direction_str,
+                "order_type": order_type,
                 "entry_price": sig.entry_price,
                 "sl": sig.sl,
                 "tp": sig.tp,
                 "risk_percent": self.risk_manager.get_risk_for_signal(sig),
                 "comment": f"SMC|{sig.confluence_score}"[:31],
+                "max_sl_pips": max_sl_pips,
+                "pip_size": pip_size,
             }
 
+            # For LIMIT orders, track as pending with 1-hour expiry
+            if order_type in ("BUY_LIMIT", "SELL_LIMIT"):
+                if zone_key in self._pending_orders:
+                    continue  # already have a pending order for this zone
+
+                try:
+                    result = self.order_mgr.execute_trade(trade_dict)
+                except Exception as e:
+                    logger.error("Limit order placement failed: %s", e)
+                    continue
+
+                if result:
+                    trade_dict["_pending_ticket"] = result["ticket"]
+                    self._pending_orders[zone_key] = (trade_dict, utc_now + timedelta(hours=1))
+                    logger.info("Pending %s placed: ticket=%d @ %.2f (expires in 1h)",
+                                order_type, result["ticket"], sig.entry_price)
+                continue
+
+            # MARKET order execution
             try:
                 execution_result = self.order_mgr.execute_trade(trade_dict)
             except Exception as e:
@@ -288,7 +394,8 @@ class AutoTrader:
                 signal_dict["smc_setup_type"] = sig.reasoning[0] if sig.reasoning else ""
                 self.journal.open_entry(signal_dict, execution_result)
                 logger.info("Trade opened: %s %s @ %.2f | SL: %.2f | TP: %.2f | RR: %.2f",
-                            direction_str, sig.symbol, sig.entry_price, sig.sl, sig.tp, sig.rr_ratio)
+                            direction_str, sig.symbol, execution_result["entry_price"],
+                            sig.sl, sig.tp, sig.rr_ratio)
 
     def _run_asian_profiling(self, symbols: list[str], utc_now: datetime) -> None:
         for symbol in symbols:
@@ -379,8 +486,8 @@ class AutoTrader:
 
         now = datetime.now(timezone.utc)
         symbol = pos_data.get("symbol", "XAUUSD") if pos_data else "XAUUSD"
-        direction = pos_data.get("type", "") if pos_data else ""
-        entry_price = pos_data.get("price_open", 0.0) if pos_data else 0.0
+        direction = pos_data.get("direction", pos_data.get("type", "")) if pos_data else ""
+        entry_price = pos_data.get("entry_price", pos_data.get("price_open", 0.0)) if pos_data else 0.0
         sl = pos_data.get("sl", 0.0) if pos_data else 0.0
         tp = pos_data.get("tp", 0.0) if pos_data else 0.0
 
@@ -391,9 +498,13 @@ class AutoTrader:
         except Exception:
             exit_price = 0.0
 
-        # RR achieved
-        risk_dist = abs(entry_price - sl) if entry_price and sl else 1.0
-        rr = round(abs(pnl / 100.0) / risk_dist, 2) if risk_dist > 0 else 0.0  # pnl per 0.01 lot approx
+        # C2: Fixed RR formula — use actual pip distances, not nonsensical pnl/100 division
+        risk_dist = abs(entry_price - sl) if entry_price and sl else 0.0
+        if risk_dist > 0 and entry_price > 0 and exit_price > 0:
+            exit_dist = abs(exit_price - entry_price)
+            rr = round(exit_dist / risk_dist, 2)
+        else:
+            rr = 0.0
 
         result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BE"
         session = self.session_profiler.get_current_session(now)
