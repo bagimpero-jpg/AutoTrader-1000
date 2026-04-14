@@ -39,15 +39,23 @@ class SessionProfiler:
         """Calculate the Asian session high, low, and midpoint for a given date.
 
         Filters the dataframe to bars between 00:00 and 08:00 UTC on `date`.
+        Handles both DatetimeIndex and 'time' column DataFrames (from MT5 bridge).
         """
         start = pd.Timestamp(datetime.combine(date, time(0, 0)), tz="UTC")
         end = pd.Timestamp(datetime.combine(date, time(8, 0)), tz="UTC")
 
-        idx = df.index
-        if idx.tz is None:
-            idx = idx.tz_localize("UTC")
+        # MT5 bridge returns 'time' as a column, not the index — handle both cases
+        if "time" in df.columns:
+            time_col = pd.to_datetime(df["time"], utc=True)
+            mask = (time_col >= start) & (time_col < end)
+        elif isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index
+            if idx.tz is None:
+                idx = idx.tz_localize("UTC")
+            mask = (idx >= start) & (idx < end)
+        else:
+            return {"high": None, "low": None, "midpoint": None}
 
-        mask = (idx >= start) & (idx < end)
         session_df = df.loc[mask]
 
         if session_df.empty:
