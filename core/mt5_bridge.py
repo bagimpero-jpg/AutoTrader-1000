@@ -182,7 +182,7 @@ class MT5Bridge:
                 )
 
             df = pd.DataFrame(rates)
-            df["time"] = pd.to_datetime(df["time"], unit="s")
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
             return df[["time", "open", "high", "low", "close", "tick_volume"]].rename(
                 columns={"tick_volume": "volume"}
             )
@@ -203,8 +203,8 @@ class MT5Bridge:
         sl: float = 0.0,
         tp: float = 0.0,
         comment: str = "",
-    ) -> int:
-        """Place an order and return the ticket number."""
+    ) -> dict[str, Any]:
+        """Place an order and return dict with ticket, fill price, and volume."""
         try:
             type_map: dict[str, int] = {
                 "BUY": mt5.ORDER_TYPE_BUY,
@@ -249,10 +249,14 @@ class MT5Bridge:
 
                 if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
                     logger.info(
-                        "Order placed: ticket=%d symbol=%s type=%s vol=%.2f (attempt %d)",
-                        result.order, symbol, order_type, volume, attempt,
+                        "Order placed: ticket=%d symbol=%s type=%s vol=%.2f price=%.5f (attempt %d)",
+                        result.order, symbol, order_type, volume, result.price, attempt,
                     )
-                    return result.order
+                    return {
+                        "ticket": result.order,
+                        "price": result.price,
+                        "volume": result.volume,
+                    }
 
                 retcode = result.retcode if result else -1
                 error_detail = result.comment if result else str(mt5.last_error())
@@ -507,6 +511,33 @@ class MT5Bridge:
         except Exception:
             logger.exception("Failed to get open positions")
             return []
+
+    def cancel_pending_order(self, ticket: int) -> bool:
+        """Cancel a pending order by ticket."""
+        try:
+            orders = mt5.orders_get(ticket=ticket)
+            if not orders:
+                logger.warning("Pending order %d not found (may already be filled/expired)", ticket)
+                return False
+
+            order = orders[0]
+            request: dict[str, Any] = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": ticket,
+                "symbol": order.symbol,
+            }
+
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                error_detail = result.comment if result else mt5.last_error()
+                raise RuntimeError(f"cancel_pending_order failed: {error_detail}")
+
+            logger.info("Pending order %d cancelled", ticket)
+            return True
+
+        except Exception:
+            logger.exception("Failed to cancel pending order %d", ticket)
+            return False
 
     def get_pending_orders(self) -> list[dict[str, Any]]:
         """Return all pending orders as a list of dicts."""

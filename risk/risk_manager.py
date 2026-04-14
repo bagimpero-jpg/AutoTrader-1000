@@ -149,11 +149,42 @@ class RiskManager:
                 logger.warning("Trade would exceed remaining daily risk budget")
                 return False
 
+            # B2: Total exposure check — max 2% of base balance across all open positions
+            max_exposure_pct = self.config.get("max_total_exposure_percent", 2.0)
+            max_exposure = self.base_balance * max_exposure_pct / 100
+            current_exposure = self._get_total_open_risk()
+            if current_exposure + risk_amount > max_exposure:
+                logger.warning(
+                    "Total exposure $%.2f + new $%.2f > max $%.2f (%.1f%%) — trade rejected",
+                    current_exposure, risk_amount, max_exposure, max_exposure_pct,
+                )
+                return False
+
             return True
 
         except Exception as e:
             logger.error("Trade validation failed: %s", e)
             return False
+
+    def _get_total_open_risk(self) -> float:
+        """Sum dollar risk across all open positions using live MT5 data."""
+        try:
+            positions = self.bridge.get_open_positions()
+            total_risk = 0.0
+            for pos in positions:
+                sl = pos.get("sl", 0.0)
+                price_open = pos.get("price_open", 0.0)
+                volume = pos.get("volume", 0.0)
+                if sl <= 0 or price_open <= 0:
+                    continue
+                sl_dist = abs(price_open - sl)
+                # For gold: 1 lot = 100 oz, $1 move = $100/lot
+                risk = sl_dist * 100 * volume
+                total_risk += risk
+            return total_risk
+        except Exception:
+            logger.exception("Failed to calculate total open risk")
+            return 0.0
 
     def record_trade_result(self, pnl: float) -> None:
         if pnl < 0:
